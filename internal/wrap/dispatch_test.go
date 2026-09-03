@@ -62,3 +62,50 @@ func TestAltToggle(t *testing.T) {
 		}
 	}
 }
+
+// Sequences the grid renderer cannot reproduce must reach the terminal
+// untouched; cell-affecting ones must not be forwarded behind its back.
+func TestPassthroughClassification(t *testing.T) {
+	pass := []string{
+		"\x1b]0;title\x07",   // OSC title
+		"\x1b]52;c;Zm9v\x07", // OSC 52 clipboard
+		"\x1b[?1000h",        // mouse reporting
+		"\x1b[?1006l",
+		"\x1b[?2004h", // bracketed paste
+		"\x1b[?1004h", // focus reporting
+		"\x1b[5 q",    // DECSCUSR cursor shape
+	}
+	for _, s := range pass {
+		if !passthrough([]byte(s)) {
+			t.Errorf("passthrough(%q) = false, want true", s)
+		}
+	}
+	block := []string{
+		"\x1b[2J",     // clear screen
+		"\x1b[H",      // cursor home
+		"\x1b[?25l",   // cursor visibility: the engine drives this itself
+		"\x1b[?1049h", // alt screen: handled by altToggle
+		"\x1b[31m",    // color
+		"\x1b[3q",     // not DECSCUSR (no intermediate space)
+	}
+	for _, s := range block {
+		if passthrough([]byte(s)) {
+			t.Errorf("passthrough(%q) = true, want false", s)
+		}
+	}
+}
+
+// A child clearing the screen must reach every row, including the ones the
+// inline engine leaves alone because the shell, not the child, wrote them.
+func TestClearsScreen(t *testing.T) {
+	for _, s := range []string{"\x1b[2J", "\x1b[3J", "\x1b[?2J", "\x1bc"} {
+		if !clearsScreen([]byte(s)) {
+			t.Errorf("clearsScreen(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"\x1b[J", "\x1b[0J", "\x1b[1J", "\x1b[2K", "\x1b[H"} {
+		if clearsScreen([]byte(s)) {
+			t.Errorf("clearsScreen(%q) = true, want false", s)
+		}
+	}
+}

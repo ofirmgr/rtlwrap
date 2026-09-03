@@ -61,3 +61,19 @@ func TestPipeColoredRTLLine(t *testing.T) {
 		t.Errorf("colored RTL line:\n got %q\nwant %q", got, want)
 	}
 }
+
+// The cursor report tells the inline engine which row the child starts on.
+// Keystrokes that arrive while it is in flight belong to the child.
+func TestParseCPR(t *testing.T) {
+	row, rest, ok := parseCPR([]byte("\x1b[12;5R"))
+	if !ok || row != 11 || len(rest) != 0 {
+		t.Errorf("parseCPR = %d, %q, %v; want 11, \"\", true", row, rest, ok)
+	}
+	row, rest, ok = parseCPR([]byte("ab\x1b[1;1Rcd"))
+	if !ok || row != 0 || string(rest) != "abcd" {
+		t.Errorf("parseCPR = %d, %q, %v; want 0, \"abcd\", true", row, rest, ok)
+	}
+	if _, _, ok := parseCPR([]byte("\x1b[12;")); ok {
+		t.Error("parseCPR accepted a partial report")
+	}
+}

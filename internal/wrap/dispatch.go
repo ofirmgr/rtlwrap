@@ -12,16 +12,29 @@ type dispatcher struct {
 	mu     sync.Mutex // guards alt/engine/size against the SIGWINCH resize
 	tk     parser.Tokenizer
 	out    io.Writer
-	pipe   *pipe
-	engine *termstate.Engine
+	pipe   *pipe             // scrolling renderer, used when there is no grid
+	main   *termstate.Engine // normal-screen grid renderer (nil: use pipe)
+	engine *termstate.Engine // alt-screen grid renderer, nil outside alt
 	alt    bool
 	cols   int
 	rows   int
 	buf    []byte // bytes accrued for the current consumer within one Write
 }
 
+// newDispatcher renders the normal screen with the scrolling pipe. Used when
+// the real terminal is not a TTY (a pipe or a file has no grid to repaint).
 func newDispatcher(out io.Writer, cols, rows int) *dispatcher {
 	return &dispatcher{out: out, pipe: newPipe(out), cols: cols, rows: rows}
+}
+
+// newInlineDispatcher renders the normal screen with a grid engine anchored at
+// startRow, so apps that repaint in place (an input line being typed into, a
+// status line, a spinner) are reshaped against the live screen instead of
+// per-fragment. startRow is the real cursor's 0-based row at startup.
+func newInlineDispatcher(out io.Writer, cols, rows, startRow int) *dispatcher {
+	d := newDispatcher(out, cols, rows)
+	d.main = termstate.NewInline(out, cols, rows, startRow)
+	return d
 }
 
 func (d *dispatcher) Write(chunk []byte) (int, error) {
@@ -29,6 +42,27 @@ func (d *dispatcher) Write(chunk []byte) (int, error) {
 	defer d.mu.Unlock()
 	for _, t := range d.tk.Push(chunk) {
 		if t.Kind == parser.ANSI {
+			if passthrough(t.Bytes) {
+				// Layout-neutral and meant for the real terminal (mouse
+				// reporting, bracketed paste, cursor shape, OSC titles and
+				// clipboard). The grid renderer never re-emits these, so hand
+				// them over directly, then let the virtual terminal see them
+				// too so its mode state stays in step.
+				if err := d.flush(); err != nil {
+					return 0, err
+				}
+				if _, err := d.out.Write(t.Bytes); err != nil {
+					return 0, err
+				}
+				d.buf = append(d.buf, t.Bytes...)
+				continue
+			}
+			if clearsScreen(t.Bytes) && d.main != nil && !d.alt {
+				// The child wants the whole screen gone, including the rows the
+				// inline engine has been leaving alone because the shell wrote
+				// them. Force the next render to paint every row.
+				d.main.Invalidate()
+			}
 			if enter, ok := altToggle(t.Bytes); ok {
 				if err := d.flush(); err != nil { // hand off buffered span
 					return 0, err
@@ -55,6 +89,9 @@ func (d *dispatcher) Close() error {
 	if err := d.flush(); err != nil {
 		return err
 	}
+	if d.main != nil {
+		return nil // the grid renderer holds nothing back
+	}
 	return d.pipe.Close()
 }
 
@@ -66,6 +103,9 @@ func (d *dispatcher) Resize(cols, rows int) {
 	if d.engine != nil {
 		d.engine.Resize(cols, rows)
 	}
+	if d.main != nil {
+		d.main.Resize(cols, rows)
+	}
 }
 
 // flush sends the accrued span to whichever renderer is currently active.
@@ -74,9 +114,12 @@ func (d *dispatcher) flush() error {
 		return nil
 	}
 	var err error
-	if d.alt {
+	switch {
+	case d.alt:
 		_, err = d.engine.Write(d.buf)
-	} else {
+	case d.main != nil:
+		_, err = d.main.Write(d.buf)
+	default:
 		_, err = d.pipe.Write(d.buf)
 	}
 	d.buf = d.buf[:0]
@@ -95,6 +138,55 @@ func (d *dispatcher) setAlt(enter bool) {
 	} else {
 		d.engine = nil
 	}
+}
+
+// clearsScreen reports whether b erases the whole screen: ED 2 or 3
+// (CSI [?] 2J / 3J) or a full reset (ESC c).
+func clearsScreen(b []byte) bool {
+	if len(b) == 2 && b[0] == 0x1b && b[1] == 'c' { // RIS
+		return true
+	}
+	if len(b) < 4 || b[0] != 0x1b || b[1] != '[' || b[len(b)-1] != 'J' {
+		return false
+	}
+	body := b[2 : len(b)-1]
+	if len(body) > 0 && body[0] == '?' { // DECSED, private form of ED
+		body = body[1:]
+	}
+	return string(body) == "2" || string(body) == "3"
+}
+
+// passthrough reports whether b is an escape sequence the real terminal must
+// receive verbatim: it changes no cell on the grid, and dropping it breaks
+// features the grid renderer cannot reproduce.
+func passthrough(b []byte) bool {
+	if len(b) < 2 || b[0] != 0x1b {
+		return false
+	}
+	if b[1] == ']' { // OSC: window title, hyperlinks, OSC 52 clipboard
+		return true
+	}
+	if b[1] != '[' {
+		return false
+	}
+	body := b[2 : len(b)-1]
+	switch b[len(b)-1] {
+	case 'h', 'l': // DECSET/DECRST
+		if len(body) == 0 || body[0] != '?' {
+			return false
+		}
+		switch string(body[1:]) {
+		case "9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016": // mouse reporting
+			return true
+		case "1004": // focus reporting
+			return true
+		case "2004": // bracketed paste
+			return true
+		}
+	case 'q': // DECSCUSR (cursor shape) is "CSI <n> SP q"
+		return len(body) > 0 && body[len(body)-1] == ' '
+	}
+	return false
 }
 
 // altToggle reports whether b is an alt-screen enter/exit private-mode set

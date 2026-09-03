@@ -102,18 +102,26 @@ untouched.
 
 ## How it works
 
-rtlwrap runs the program on a pseudo-terminal and picks a renderer based on what
-the program is doing:
+rtlwrap runs the program on a pseudo-terminal and feeds its output into a
+virtual terminal, then re-emits each screen row with its RTL runs reshaped and
+colors carried onto the reordered cells. Because the reshaping works from the
+screen as it actually stands, it covers both:
 
 - Scrolling / static output (for example `rtlwrap cat file.fa`,
-  `rtlwrap git log`) is shaped line by line as it streams, preserving your
-  terminal's scrollback.
-- Full-screen interactive programs that use the alternate screen are reshaped
-  against a virtual terminal grid, so cursor-positioned repaints reorder
-  correctly.
+  `rtlwrap git log`). Rows that scroll off the top go into your terminal's real
+  scrollback, already shaped.
+- Programs that repaint in place — a prompt being typed into, a status line, a
+  spinner, and full-screen programs on the alternate screen. Text is reshaped
+  per row, so RTL you type appears in the right order as you type it, not only
+  after the program redraws the whole line.
 
-ANSI escape sequences and control bytes are always passed through byte for byte;
-only actual text runs are ever reshaped.
+Piping the output somewhere that is not a terminal (`rtlwrap cmd | tee log`)
+falls back to shaping line by line as it streams.
+
+Escape sequences are handled, not guessed at: those that move the cursor or
+paint cells drive the virtual screen, and the ones a virtual screen cannot
+reproduce — window title, clipboard, hyperlinks, mouse reporting, bracketed
+paste, cursor shape — are passed to your terminal verbatim.
 
 ## Terminal compatibility
 

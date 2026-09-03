@@ -13,8 +13,8 @@ so the project's promises stay defensible.
   forms (initial/medial/final/isolated), but each glyph still gets a whole
   cell of advance, so joined letters sit adjacent rather than flowing into one
   another. This is a font + terminal rendering limit, not something a
-  byte-stream transformer can close. Phase 3 does **not** fix it either — it's
-  a different layer.
+  byte-stream transformer can close. The grid renderer does **not** fix it
+  either — it's a different layer.
   - *Improves with:* a terminal with good Arabic cell handling (Kitty, foot)
     and a font designed for it (Vazirmatn, Noto Naskh Arabic).
 - **Some breaks between letters are correct.** ا د ذ ر ز و and friends never
@@ -22,38 +22,46 @@ so the project's promises stay defensible.
 
 ## Redraw-heavy / interactive apps
 
-rtlwrap runs two renderers and switches between them automatically:
+rtlwrap feeds the child's output into a virtual terminal and re-emits each row
+with its RTL runs reshaped and colors remapped onto the reordered cells. That
+grid renderer drives both screens:
 
-- **Scrolling / static output** (`rtlwrap cat file.fa`, `rtlwrap git log`,
-  program logs) — shaped line-by-line as it scrolls, streamed into the real
-  terminal's scrollback. Works well.
-- **Full-screen TUIs that use the alternate screen** (vim, less, and
-  full-screen interactive apps) — reshaped against the live terminal-state grid
-  (Phase 3 `termstate`): rtlwrap feeds the child's output into a virtual
-  terminal, then re-emits each row with its RTL runs reshaped and colors
-  remapped onto the reordered cells. This handles cursor-positioned repaints
-  that the scrolling renderer cannot.
+- **The normal screen** (`rtlwrap cat file.he`, `rtlwrap git log`, program logs,
+  and interactive apps that repaint in place — Claude Code, Codex CLI, spinners,
+  status lines). Rows that scroll off the top are pushed through the terminal's
+  top row as they leave, so they land in the real scrollback already shaped.
+- **The alternate screen** (vim, less, full-screen TUIs), reshaped against the
+  live grid the same way.
+
+The scrolling line-by-line renderer is now only the fallback for a non-TTY
+stdout (`rtlwrap cmd | tee log`), where there is no grid to repaint.
 
 **Remaining gaps:**
 
-- **Apps that repaint the *normal* screen in place** (no alternate-screen
-  buffer — some spinners, progress bars, status lines) still go through the
-  scrolling renderer, so in-place cursor moves inside a line can shape
-  fragments independently. Only alternate-screen apps get the grid renderer.
-  Whether a given interactive app (e.g. Claude Code) is fully correct depends on
-  whether it uses the alternate screen.
 - **Cursor position in a reshaped RTL row** can sit one cell off per lam-alef
   ligature to its left (the zero-width filler is stripped from display but not
   yet subtracted from the cursor column).
-- **Symptom in the scrolling renderer:** a partial RTL line with no trailing
+- **Anchoring to the current line** relies on a cursor-position report
+  (`ESC [ 6 n`) at startup. A terminal that does not answer within 250 ms leaves
+  rtlwrap anchored at the top row, and output can then paint over lines the
+  shell had already printed.
+- **On resize**, rtlwrap takes the reflowed grid as already on screen instead of
+  repainting it. Apps repaint themselves on SIGWINCH; one that does not can be
+  left showing stale rows until its next redraw.
+- **Escape sequences the grid cannot reproduce** (window title, OSC 52
+  clipboard, hyperlinks, mouse reporting, focus reporting, bracketed paste,
+  cursor shape) are forwarded to the terminal verbatim. Anything outside that
+  list that a real terminal would act on — and rtlwrap's virtual terminal does
+  not implement — is still dropped.
+- **Symptom in the non-TTY fallback:** a partial RTL line with no trailing
   newline is held until the next read or EOF (so a word split across two PTY
   reads still joins as one line).
 
 ## Mid-line color inside an RTL run
 
 - A color change **inside** a single Persian word splits shaping at the escape
-  sequence, so that word may shape per-segment. Whole-line color (set at start,
-  reset at end) is correct. Also a Phase 3 concern.
+  sequence, so that word may shape per-segment in the non-TTY fallback. On the
+  grid renderer the row is reshaped from cells, so mid-word color is fine.
 
 ## Unicode edge cases
 

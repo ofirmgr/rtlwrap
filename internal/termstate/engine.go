@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hinshun/vt10x"
+	"github.com/Har2yQn78/rtlwrap/internal/vt10x"
 
 	"github.com/Har2yQn78/rtlwrap/internal/shape"
 )
@@ -28,10 +28,14 @@ type Engine struct {
 	vt         vt10x.Terminal
 	w          io.Writer
 	cols, rows int
-	prev       []string // last-emitted content per row, for diffing
+	prev       []string        // last-emitted content per row, for diffing
+	inline     bool            // normal screen: preserve the real terminal's scrollback
+	scrolled   [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
 }
 
-// New returns an Engine rendering a cols×rows virtual terminal to w.
+// New returns an Engine rendering a cols×rows virtual terminal to w, for an
+// alternate-screen session: the real terminal just cleared to its alt buffer,
+// so the grid and the screen both start blank and every row is ours to paint.
 func New(w io.Writer, cols, rows int) *Engine {
 	return &Engine{
 		vt:   vt10x.New(vt10x.WithSize(cols, rows)),
@@ -42,11 +46,74 @@ func New(w io.Writer, cols, rows int) *Engine {
 	}
 }
 
+// NewInline returns an Engine for the normal screen, where the rows above the
+// child's starting point hold the shell's existing output and the real
+// terminal owns a scrollback the child expects to keep filling.
+//
+// startRow is the real cursor's 0-based row when the child starts; the virtual
+// cursor is moved there so the grid and the screen agree on coordinates. Rows
+// the child has not written keep their blank rendering in prev, so they are
+// never repainted and whatever the shell left there survives.
+//
+// When rows scroll off the top, the engine scrolls the real terminal by the
+// same amount instead of repainting: the lines leaving the screen are the ones
+// it already painted, so they enter the real scrollback correctly shaped.
+func NewInline(w io.Writer, cols, rows, startRow int) *Engine {
+	e := &Engine{
+		vt:     vt10x.New(vt10x.WithSize(cols, rows)),
+		w:      w,
+		cols:   cols,
+		rows:   rows,
+		prev:   make([]string, rows),
+		inline: true,
+	}
+	e.vt.SetScrollCallback(func(lines [][]vt10x.Glyph) {
+		e.scrolled = append(e.scrolled, lines...)
+	})
+	if startRow > 0 {
+		if startRow > rows-1 {
+			startRow = rows - 1
+		}
+		_, _ = e.vt.Write([]byte(strings.Repeat("\n", startRow)))
+	}
+	e.seedPrev()
+	return e
+}
+
+// seedPrev records the current grid as already on screen, so the first render
+// emits only what the child changes.
+func (e *Engine) seedPrev() {
+	e.vt.Lock()
+	defer e.vt.Unlock()
+	for y := 0; y < e.rows; y++ {
+		e.prev[y], _ = e.renderRow(y, e.cols)
+	}
+	e.scrolled = nil
+}
+
+// Invalidate forgets what the screen is assumed to show, so the next render
+// paints every row. The inline engine starts out assuming the rows it has not
+// written still hold the shell's output; a child that clears the screen expects
+// those to go, and only a full repaint can do that.
+func (e *Engine) Invalidate() {
+	e.prev = make([]string, e.rows)
+}
+
 // Resize resizes the virtual terminal and forces a full repaint next render.
 func (e *Engine) Resize(cols, rows int) {
 	e.vt.Resize(cols, rows)
 	e.cols, e.rows = cols, rows
-	e.prev = make([]string, rows) // invalidate: "" matches no rendered row
+	e.prev = make([]string, rows)
+	e.scrolled = nil // the resize itself reflowed both screens
+	if e.inline {
+		// Take the reflowed grid as already on screen rather than repainting
+		// it: rows the child never wrote hold the shell's own output, and
+		// painting the grid's blanks over them would erase it. The child gets
+		// SIGWINCH and repaints what it owns.
+		e.seedPrev()
+	}
+	// Alt screen: leave prev empty ("" matches no rendered row) for a full
+	// repaint, which is what the child's own alt buffer expects.
 }
 
 // Write feeds raw child bytes to the virtual terminal, then renders. It always
@@ -71,6 +138,25 @@ func (e *Engine) render() error {
 	// Hide cursor + disable autowrap during the repaint so a full-width row's
 	// last column can't scroll the screen. Restored at the end.
 	buf.WriteString("\x1b[?25l\x1b[?7l")
+
+	// Push the rows that left the grid through the real terminal's top row and
+	// scroll, so they enter its scrollback exactly as the user would have seen
+	// them — including a burst that scrolled more rows than the screen holds,
+	// where no amount of repainting could recover them.
+	if len(e.scrolled) > 0 {
+		out := e.scrolled
+		e.scrolled = nil
+		for _, cells := range out {
+			line, _ := e.renderCells(cells, cols)
+			if line != e.prev[0] { // already on the top row: no need to repaint
+				buf.WriteString("\x1b[1;1H\x1b[2K")
+				buf.WriteString(line)
+			}
+			fmt.Fprintf(&buf, "\x1b[%d;1H\n", rows) // scroll: top row -> scrollback
+			copy(e.prev, e.prev[1:])
+			e.prev[rows-1] = "" // scrolled in blank: repaint whatever lands here
+		}
+	}
 
 	l2v := make([][]int, rows) // per-row visualToLogical, kept for cursor mapping
 	for y := 0; y < rows; y++ {
@@ -101,29 +187,52 @@ func (e *Engine) render() error {
 
 // renderRow builds the SGR-encoded visual string for grid row y and returns it
 // with that row's visualToLogical map (nil if the row had no runes).
-//
-// ponytail: emits the full cols width (trailing spaces included) rather than
-// trimming. The row is cleared with \x1b[2K first, so trailing default cells are
-// harmless, and emitting them keeps any full-row background color correct. Trim
-// only if the extra bytes on wide terminals ever measure.
 func (e *Engine) renderRow(y, cols int) (string, []int) {
-	logical := make([]rune, cols)
+	cells := make([]vt10x.Glyph, cols)
+	for x := 0; x < cols; x++ {
+		cells[x] = e.vt.Cell(x, y)
+	}
+	return e.renderCells(cells, cols)
+}
+
+// renderCells builds the SGR-encoded visual string for one row of glyphs (from
+// the grid, or from a row that has scrolled off it) and its visualToLogical map.
+//
+// Only the row's used prefix is reordered. A terminal row is padded to the full
+// width with blanks, and those blanks are not text: feeding them to the bidi
+// reorder would attach them to a trailing RTL run and push the whole line to
+// the right edge. They are dropped instead — the row is painted after \x1b[2K,
+// so a default-attribute blank paints nothing. A blank carrying background,
+// underline or reverse does show, so it counts as used.
+func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int) {
 	type attr struct {
 		fg, bg vt10x.Color
 		mode   int16
 	}
+	logical := make([]rune, cols)
 	attrs := make([]attr, cols)
+	used := 0
 	for x := 0; x < cols; x++ {
-		g := e.vt.Cell(x, y)
+		g := vt10x.Glyph{FG: vt10x.DefaultFG, BG: vt10x.DefaultBG}
+		if x < len(cells) {
+			g = cells[x]
+		}
 		r := g.Char
 		if r == 0 {
 			r = ' '
 		}
 		logical[x] = r
 		attrs[x] = attr{g.FG, g.BG, g.Mode}
+		if r != ' ' || g.BG != vt10x.DefaultBG || g.Mode&(attrUnderline|attrReverse) != 0 {
+			used = x + 1
+		}
 	}
 
-	vis, v2l := shape.ShapeRunes(logical)
+	vis, v2l := shape.ShapeRunes(logical[:used])
+	// The dropped tail still needs map entries: the cursor can sit in it.
+	for x := used; x < cols; x++ {
+		v2l = append(v2l, x)
+	}
 
 	var sb strings.Builder
 	last := attr{fg: ^vt10x.Color(0)} // impossible value forces first SGR emit
