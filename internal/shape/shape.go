@@ -51,10 +51,19 @@ func shapeLine(line string) string {
 // pass, edge cases are unverified. Add a width.go backed by uniseg + runewidth
 // when precise cursor/width math is needed (e.g. editing in an RTL input field).
 func ShapeRunes(logical []rune) (visual []rune, visualToLogical []int) {
+	vis, v2l, _ := ShapeRunesDir(logical)
+	return vis, v2l
+}
+
+// ShapeRunesDir is ShapeRunes plus the paragraph base direction fribidi
+// resolved for the line (rtl is true when the first strong character is RTL).
+// Callers that lay the line out on a grid use it to right-align an RTL
+// paragraph, which is where a bidi-aware renderer would put it.
+func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bool) {
 	if len(logical) == 0 {
-		return nil, nil
+		return nil, nil, false
 	}
 	base := fribidi.ParType(fribidi.ON) // auto-detect base direction
 	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, logical, &base)
-	return vis.Str, vis.VisualToLogical
+	return vis.Str, vis.VisualToLogical, base.IsRtl()
 }

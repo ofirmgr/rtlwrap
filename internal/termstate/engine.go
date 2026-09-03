@@ -86,7 +86,7 @@ func (e *Engine) seedPrev() {
 	e.vt.Lock()
 	defer e.vt.Unlock()
 	for y := 0; y < e.rows; y++ {
-		e.prev[y], _ = e.renderRow(y, e.cols)
+		e.prev[y], _, _ = e.renderRow(y, e.cols)
 	}
 	e.scrolled = nil
 }
@@ -147,7 +147,7 @@ func (e *Engine) render() error {
 		out := e.scrolled
 		e.scrolled = nil
 		for _, cells := range out {
-			line, _ := e.renderCells(cells, cols)
+			line, _, _ := e.renderCells(cells, cols)
 			if line != e.prev[0] { // already on the top row: no need to repaint
 				buf.WriteString("\x1b[1;1H\x1b[2K")
 				buf.WriteString(line)
@@ -159,9 +159,10 @@ func (e *Engine) render() error {
 	}
 
 	l2v := make([][]int, rows) // per-row visualToLogical, kept for cursor mapping
+	pads := make([]int, rows)  // per-row left pad of a right-aligned RTL row
 	for y := 0; y < rows; y++ {
-		line, v2l := e.renderRow(y, cols)
-		l2v[y] = v2l
+		line, v2l, pad := e.renderRow(y, cols)
+		l2v[y], pads[y] = v2l, pad
 		if line == e.prev[y] {
 			continue
 		}
@@ -174,7 +175,10 @@ func (e *Engine) render() error {
 	cur := e.vt.Cursor()
 	cx := cur.X
 	if cur.Y >= 0 && cur.Y < rows {
-		cx = visualX(l2v[cur.Y], cur.X, cols)
+		cx = visualX(l2v[cur.Y], cur.X, cols) + pads[cur.Y]
+		if cx > cols-1 {
+			cx = cols - 1
+		}
 	}
 	fmt.Fprintf(&buf, "\x1b[%d;%dH", cur.Y+1, cx+1)
 	if e.vt.CursorVisible() {
@@ -187,7 +191,7 @@ func (e *Engine) render() error {
 
 // renderRow builds the SGR-encoded visual string for grid row y and returns it
 // with that row's visualToLogical map (nil if the row had no runes).
-func (e *Engine) renderRow(y, cols int) (string, []int) {
+func (e *Engine) renderRow(y, cols int) (string, []int, int) {
 	cells := make([]vt10x.Glyph, cols)
 	for x := 0; x < cols; x++ {
 		cells[x] = e.vt.Cell(x, y)
@@ -196,7 +200,8 @@ func (e *Engine) renderRow(y, cols int) (string, []int) {
 }
 
 // renderCells builds the SGR-encoded visual string for one row of glyphs (from
-// the grid, or from a row that has scrolled off it) and its visualToLogical map.
+// the grid, or from a row that has scrolled off it), its visualToLogical map,
+// and the left pad the line is printed at.
 //
 // Only the row's used prefix is reordered. A terminal row is padded to the full
 // width with blanks, and those blanks are not text: feeding them to the bidi
@@ -204,7 +209,12 @@ func (e *Engine) renderRow(y, cols int) (string, []int) {
 // the right edge. They are dropped instead — the row is painted after \x1b[2K,
 // so a default-attribute blank paints nothing. A blank carrying background,
 // underline or reverse does show, so it counts as used.
-func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int) {
+//
+// A row whose resolved paragraph direction is RTL is then right-aligned: the
+// line is printed pad cells in from the left so it ends at the right edge,
+// which is where a bidi-aware renderer puts an RTL paragraph. The pad is a
+// cursor-forward move over the just-cleared row, so it paints nothing itself.
+func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int) {
 	type attr struct {
 		fg, bg vt10x.Color
 		mode   int16
@@ -228,13 +238,30 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int) {
 		}
 	}
 
-	vis, v2l := shape.ShapeRunes(logical[:used])
+	vis, v2l, rtl := shape.ShapeRunesDir(logical[:used])
 	// The dropped tail still needs map entries: the cursor can sit in it.
 	for x := used; x < cols; x++ {
 		v2l = append(v2l, x)
 	}
 
+	// Width in cells of what is actually painted: the U+FEFF fillers below
+	// occupy none. ponytail: no wide-rune math (see shape.ShapeRunes), so a
+	// row holding CJK or emoji right-aligns a cell short per wide rune.
+	width := 0
+	for _, r := range vis {
+		if r != '\ufeff' {
+			width++
+		}
+	}
+	pad := 0
+	if rtl && width < cols {
+		pad = cols - width
+	}
+
 	var sb strings.Builder
+	if pad > 0 {
+		fmt.Fprintf(&sb, "\x1b[%dC", pad)
+	}
 	last := attr{fg: ^vt10x.Color(0)} // impossible value forces first SGR emit
 	for i, r := range vis {
 		if r == '\ufeff' { // lam-alef filler: no cell, keeps the map 1:1
@@ -248,7 +275,7 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int) {
 		sb.WriteRune(r)
 	}
 	sb.WriteString("\x1b[0m")
-	return sb.String(), v2l
+	return sb.String(), v2l, pad
 }
 
 // visualX maps a logical column to its visual column in a reshaped row.

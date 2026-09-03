@@ -147,16 +147,43 @@ func TestInlineIncrementalRTLTyping(t *testing.T) {
 	}
 }
 
-// A row's blank padding is not text: reordering it with the row's RTL run would
-// push the line to the right edge of the screen.
-func TestRowPaddingNotReordered(t *testing.T) {
+// A row's blank padding is not text: reordering it with the row's RTL run
+// would scatter the blanks through the line. The run is moved to the right
+// edge with a cursor-forward move over the cleared row instead, which is where
+// an RTL paragraph belongs.
+func TestRTLRowRightAligned(t *testing.T) {
 	var buf bytes.Buffer
 	e := NewInline(&buf, 20, 2, 0)
 	if _, err := e.Write([]byte("שלום")); err != nil {
 		t.Fatal(err)
 	}
-	want := "\x1b[1;1H\x1b[2K\x1b[0m" + shape.Shape("שלום")
+	want := "\x1b[1;1H\x1b[2K\x1b[16C\x1b[0m" + shape.Shape("שלום")
 	if !strings.Contains(buf.String(), want) {
-		t.Errorf("RTL row not painted at column 1\n got %q\nwant substr %q", buf.String(), want)
+		t.Errorf("RTL row not right-aligned\n got %q\nwant substr %q", buf.String(), want)
+	}
+}
+
+// An LTR row keeps column 1: only an RTL paragraph is right-aligned.
+func TestLTRRowNotAligned(t *testing.T) {
+	var buf bytes.Buffer
+	e := NewInline(&buf, 20, 2, 0)
+	if _, err := e.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "\x1b[1;1H\x1b[2K\x1b[0mhello") {
+		t.Errorf("LTR row not painted at column 1: %q", buf.String())
+	}
+}
+
+// The cursor has to follow the line it sits on: after a right-aligned RTL row
+// it lands at the right edge, not at the logical column.
+func TestRTLCursorFollowsAlignment(t *testing.T) {
+	var buf bytes.Buffer
+	e := NewInline(&buf, 20, 2, 0)
+	if _, err := e.Write([]byte("שלום")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "\x1b[1;20H") {
+		t.Errorf("cursor not moved to the aligned row end\ngot %q", buf.String())
 	}
 }

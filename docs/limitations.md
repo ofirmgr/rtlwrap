@@ -36,8 +36,18 @@ grid renderer drives both screens:
 The scrolling line-by-line renderer is now only the fallback for a non-TTY
 stdout (`rtlwrap cmd | tee log`), where there is no grid to repaint.
 
+On the grid renderer a row whose resolved paragraph direction is RTL is
+right-aligned (printed flush to the right edge), matching where a bidi-aware
+renderer puts an RTL paragraph. A row that already reaches the right edge — a
+full-width TUI box, for instance — has no room to shift and stays put, so text
+inside such a box is still left-aligned within it. The non-TTY fallback does
+not align at all.
+
 **Remaining gaps:**
 
+- **Right alignment counts runes, not cells**, so a right-aligned row holding
+  CJK or emoji ends one column short per wide rune (same missing width math as
+  the cursor gap below).
 - **Cursor position in a reshaped RTL row** can sit one cell off per lam-alef
   ligature to its left (the zero-width filler is stripped from display but not
   yet subtracted from the cursor column).
