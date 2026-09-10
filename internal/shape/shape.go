@@ -1,6 +1,7 @@
 package shape
 
 import (
+	"os"
 	"strings"
 
 	"github.com/benoitkugler/textprocessing/fribidi"
@@ -64,6 +65,15 @@ func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bo
 		return nil, nil, false
 	}
 	base := fribidi.ParType(fribidi.ON) // auto-detect base direction
-	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, logical, &base)
+	flags := fribidi.DefaultFlags
+	// Warp applies the RTL mirrored glyph for paired punctuation even though its
+	// terminal grid does not perform bidi reordering. FriBidi has already moved
+	// those characters into visual order, so mirroring them here as well makes
+	// pairs such as (WER) appear as )WER(. Leave mirroring enabled everywhere
+	// else; terminals that render the emitted cells literally require it.
+	if os.Getenv("TERM_PROGRAM") == "WarpTerminal" {
+		flags &^= fribidi.ShapeMirroring
+	}
+	vis, _ := fribidi.LogicalToVisual(flags, logical, &base)
 	return vis.Str, vis.VisualToLogical, base.IsRtl()
 }

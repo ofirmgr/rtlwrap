@@ -49,3 +49,18 @@ func TestShapeMultiline(t *testing.T) {
 		t.Errorf("LTR lines changed: %q", out)
 	}
 }
+
+func TestShapeCompensatesForWarpPunctuationMirroring(t *testing.T) {
+	logical := "דיוק מילים (WER): כמה מילים"
+	t.Setenv("TERM_PROGRAM", "")
+	standard := "םילימ המכ :(WER) םילימ קויד"
+	if got := Shape(logical); got != standard {
+		t.Errorf("standard mirrored punctuation:\n got %q\nwant %q", got, standard)
+	}
+
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	want := "םילימ המכ :)WER( םילימ קויד"
+	if got := Shape(logical); got != want {
+		t.Errorf("Warp mirrored punctuation compensation:\n got %q\nwant %q", got, want)
+	}
+}
