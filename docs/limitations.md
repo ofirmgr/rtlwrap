@@ -43,10 +43,10 @@ full-width TUI box, for instance — has no room to shift and stays put, so text
 inside such a box is still left-aligned within it. The non-TTY fallback does
 not align at all.
 
-During streaming grid updates, rtlwrap keeps the terminal cursor hidden until
-there has been no repaint for 50 ms. This prevents intermediate bidi cursor
-positions from flashing across the row; shutdown restores the cursor
-immediately.
+During grid updates, cursor hiding, painting, final positioning, and restoration
+are emitted in the same write. There is no quiet-period timer: continuous status
+updates must not keep the cursor hidden between repaints. Application-requested
+cursor hiding is preserved; shutdown restores the cursor immediately.
 
 Synchronized-output markers (`CSI ?2026 h/l`) are forwarded to the host terminal.
 This preserves redraw boundaries used by interactive applications such as Codex,

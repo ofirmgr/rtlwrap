@@ -5,45 +5,59 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Har2yQn78/rtlwrap/internal/copytext"
 	"github.com/Har2yQn78/rtlwrap/internal/shape"
 )
 
-func TestDispatchDefersCursorUntilStreamingSettles(t *testing.T) {
-	var output bytes.Buffer
-	d := newInlineDispatcher(&output, 40, 3, 0)
-	d.cursorDelay = time.Hour
+// Every completed frame must restore the application-requested visibility in
+// the same write, even when output never pauses long enough for a timer.
+func TestDispatchCursorVisibleDuringContinuousOutput(t *testing.T) {
+	for _, alt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("alt=%v", alt), func(t *testing.T) {
+			var out frameWriter
+			d := newInlineDispatcher(&out, 40, 3, 0)
+			defer func() { _ = d.Close() }()
+			if alt {
+				_, _ = d.Write([]byte("\x1b[?1049h"))
+			}
+			for i := 0; i < 100; i++ {
+				out.frames = nil
+				if _, err := d.Write([]byte(fmt.Sprintf("\rstatus: שלום %d test", i))); err != nil {
+					t.Fatal(err)
+				}
+				if len(out.frames) != 1 || !bytes.HasSuffix(out.frames[0], []byte("\x1b[?25h")) {
+					t.Fatalf("frame %d left cursor hidden: %q", i, out.frames)
+				}
+			}
+			out.frames = nil
+			_, _ = d.Write([]byte("\x1b[?25lhidden"))
+			if bytes.Contains(bytes.Join(out.frames, nil), []byte("\x1b[?25h")) {
+				t.Fatal("application-hidden cursor was shown")
+			}
+			out.frames = nil
+			_, _ = d.Write([]byte("\x1b[?25h"))
+			if !bytes.HasSuffix(bytes.Join(out.frames, nil), []byte("\x1b[?25h")) {
+				t.Fatal("application cursor-show request was not restored")
+			}
+			out.frames = nil
+			if err := d.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.HasSuffix(bytes.Join(out.frames, nil), []byte("\x1b[?25h")) {
+				t.Fatal("cursor not restored at close")
+			}
+		})
+	}
+}
 
-	if _, err := d.Write([]byte("מילים")); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output.String(), "\x1b[?25h") {
-		t.Fatalf("cursor shown inside streaming repaint: %q", output.String())
-	}
-	staleEpoch := d.cursorEpoch
+type frameWriter struct {
+	frames [][]byte
+}
 
-	output.Reset()
-	if _, err := d.Write([]byte(" נוספות")); err != nil {
-		t.Fatal(err)
-	}
-	d.showCursor(staleEpoch)
-	if strings.Contains(output.String(), "\x1b[?25h") {
-		t.Fatalf("stale cursor timer exposed an intermediate position: %q", output.String())
-	}
-	d.showCursor(d.cursorEpoch)
-	if !strings.Contains(output.String(), "\x1b[?25h") {
-		t.Fatalf("cursor not shown after stream settled: %q", output.String())
-	}
-
-	output.Reset()
-	if err := d.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "\x1b[?25h") {
-		t.Fatalf("cursor not restored at close: %q", output.String())
-	}
+func (w *frameWriter) Write(p []byte) (int, error) {
+	w.frames = append(w.frames, bytes.Clone(p))
+	return len(p), nil
 }
 
 // The clipboard cache must see the same text the renderer paints, including
@@ -51,7 +65,6 @@ func TestDispatchDefersCursorUntilStreamingSettles(t *testing.T) {
 func TestCopyRestorationAcrossScreens(t *testing.T) {
 	var output bytes.Buffer
 	d := newInlineDispatcher(&output, 40, 3, 0)
-	d.cursorDelay = time.Hour
 	defer func() { _ = d.Close() }()
 	copies := copytext.New(64)
 	d.observeRows(copies.Add)
@@ -123,7 +136,6 @@ func TestDispatchPreservesSynchronizedRedraw(t *testing.T) {
 		t.Run(fmt.Sprintf("alt=%v", alt), func(t *testing.T) {
 			var out bytes.Buffer
 			d := newInlineDispatcher(&out, 40, 3, 0)
-			d.cursorDelay = time.Hour
 			defer func() { _ = d.Close() }()
 			if alt {
 				_, _ = d.Write([]byte("\x1b[?1049h"))
