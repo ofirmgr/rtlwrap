@@ -65,15 +65,28 @@ func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bo
 		return nil, nil, false
 	}
 	base := fribidi.ParType(fribidi.ON) // auto-detect base direction
-	flags := fribidi.DefaultFlags
-	// Warp applies the RTL mirrored glyph for paired punctuation even though its
-	// terminal grid does not perform bidi reordering. FriBidi has already moved
-	// those characters into visual order, so mirroring them here as well makes
-	// pairs such as (WER) appear as )WER(. Leave mirroring enabled everywhere
-	// else; terminals that render the emitted cells literally require it.
+	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, logical, &base)
+	// Warp does not reorder RTL text, but its text renderer still mirrors paired
+	// punctuation according to levels resolved from the bytes it receives. Those
+	// bytes are already in visual order here, so pre-mirror exactly the glyphs
+	// Warp will mirror on that second pass. Disabling FriBidi mirroring globally
+	// is insufficient: in an LTR paragraph, the two sides of an RTL parenthesis
+	// pair can resolve to different levels and leave a pair such as (עברית) with
+	// one backwards side.
 	if os.Getenv("TERM_PROGRAM") == "WarpTerminal" {
-		flags &^= fribidi.ShapeMirroring
+		preMirrorForWarp(vis.Str)
 	}
-	vis, _ := fribidi.LogicalToVisual(flags, logical, &base)
 	return vis.Str, vis.VisualToLogical, base.IsRtl()
+}
+
+func preMirrorForWarp(visual []rune) {
+	types := make([]fribidi.CharType, len(visual))
+	brackets := make([]fribidi.BracketType, len(visual))
+	for i, r := range visual {
+		types[i] = fribidi.GetBidiType(r)
+		brackets[i] = fribidi.GetBracket(r)
+	}
+	base := fribidi.ParType(fribidi.ON)
+	levels, _ := fribidi.GetParEmbeddingLevels(types, brackets, &base)
+	fribidi.Shape(fribidi.ShapeMirroring, levels, nil, visual)
 }

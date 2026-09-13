@@ -1,30 +1,83 @@
 package wrap
 
 import (
+	"bytes"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/Har2yQn78/rtlwrap/internal/parser"
 	"github.com/Har2yQn78/rtlwrap/internal/termstate"
 )
 
+const cursorSettleDelay = 50 * time.Millisecond
+
+var showCursorSequence = []byte("\x1b[?25h")
+
+// deferredCursorWriter suppresses the cursor-show sequence Engine appends to
+// each repaint. The dispatcher restores it after output has been quiet long
+// enough that intermediate bidi cursor positions will not be visible.
+type deferredCursorWriter struct {
+	out           io.Writer
+	showRequested bool
+}
+
+func (w *deferredCursorWriter) Write(p []byte) (int, error) {
+	originalLen := len(p)
+	w.showRequested = bytes.HasSuffix(p, showCursorSequence)
+	if w.showRequested {
+		p = p[:len(p)-len(showCursorSequence)]
+	}
+	n, err := w.out.Write(p)
+	if n == len(p) {
+		return originalLen, err
+	}
+	return n, err
+}
+
+func (w *deferredCursorWriter) takeShowRequest() bool {
+	requested := w.showRequested
+	w.showRequested = false
+	return requested
+}
+
 type dispatcher struct {
-	mu     sync.Mutex // guards alt/engine/size against the SIGWINCH resize
-	tk     parser.Tokenizer
-	out    io.Writer
-	pipe   *pipe             // scrolling renderer, used when there is no grid
-	main   *termstate.Engine // normal-screen grid renderer (nil: use pipe)
-	engine *termstate.Engine // alt-screen grid renderer, nil outside alt
-	alt    bool
-	cols   int
-	rows   int
-	buf    []byte // bytes accrued for the current consumer within one Write
+	mu          sync.Mutex // guards alt/engine/size against the SIGWINCH resize
+	tk          parser.Tokenizer
+	out         io.Writer
+	pipe        *pipe             // scrolling renderer, used when there is no grid
+	main        *termstate.Engine // normal-screen grid renderer (nil: use pipe)
+	engine      *termstate.Engine // alt-screen grid renderer, nil outside alt
+	alt         bool
+	cols        int
+	rows        int
+	buf         []byte // bytes accrued for the current consumer within one Write
+	rowObserver func([]rune, []rune, []int)
+	gridOut     *deferredCursorWriter
+	cursorTimer *time.Timer
+	cursorEpoch uint64
+	cursorDelay time.Duration
+}
+
+// observeRows attaches copy restoration to both grids. Call before Write.
+func (d *dispatcher) observeRows(observer func([]rune, []rune, []int)) {
+	d.rowObserver = observer
+	if d.main != nil {
+		d.main.SetRowObserver(observer)
+	}
 }
 
 // newDispatcher renders the normal screen with the scrolling pipe. Used when
 // the real terminal is not a TTY (a pipe or a file has no grid to repaint).
 func newDispatcher(out io.Writer, cols, rows int) *dispatcher {
-	return &dispatcher{out: out, pipe: newPipe(out), cols: cols, rows: rows}
+	return &dispatcher{
+		out:         out,
+		pipe:        newPipe(out),
+		cols:        cols,
+		rows:        rows,
+		gridOut:     &deferredCursorWriter{out: out},
+		cursorDelay: cursorSettleDelay,
+	}
 }
 
 // newInlineDispatcher renders the normal screen with a grid engine anchored at
@@ -33,7 +86,7 @@ func newDispatcher(out io.Writer, cols, rows int) *dispatcher {
 // per-fragment. startRow is the real cursor's 0-based row at startup.
 func newInlineDispatcher(out io.Writer, cols, rows, startRow int) *dispatcher {
 	d := newDispatcher(out, cols, rows)
-	d.main = termstate.NewInline(out, cols, rows, startRow)
+	d.main = termstate.NewInline(d.gridOut, cols, rows, startRow)
 	return d
 }
 
@@ -90,7 +143,12 @@ func (d *dispatcher) Close() error {
 		return err
 	}
 	if d.main != nil {
-		return nil // the grid renderer holds nothing back
+		d.cancelCursorShow()
+		_, err := d.out.Write(showCursorSequence)
+		return err
+	}
+	if d.engine != nil {
+		d.cancelCursorShow()
 	}
 	return d.pipe.Close()
 }
@@ -117,8 +175,20 @@ func (d *dispatcher) flush() error {
 	switch {
 	case d.alt:
 		_, err = d.engine.Write(d.buf)
+		requested := d.gridOut.takeShowRequest()
+		if err == nil {
+			d.scheduleCursorShow(requested)
+		} else {
+			d.cancelCursorShow()
+		}
 	case d.main != nil:
 		_, err = d.main.Write(d.buf)
+		requested := d.gridOut.takeShowRequest()
+		if err == nil {
+			d.scheduleCursorShow(requested)
+		} else {
+			d.cancelCursorShow()
+		}
 	default:
 		_, err = d.pipe.Write(d.buf)
 	}
@@ -130,14 +200,52 @@ func (d *dispatcher) setAlt(enter bool) {
 	if enter == d.alt {
 		return
 	}
+	d.cancelCursorShow()
 	d.alt = enter
 	if enter {
 		// Fresh engine per alt session: the real terminal just cleared to its
 		// alt buffer, so the grid starts blank and matches.
-		d.engine = termstate.New(d.out, d.cols, d.rows)
+		d.engine = termstate.New(d.gridOut, d.cols, d.rows)
+		d.engine.SetRowObserver(d.rowObserver)
 	} else {
 		d.engine = nil
+		if d.main != nil {
+			d.scheduleCursorShow(true)
+		}
 	}
+}
+
+// scheduleCursorShow resets the quiet-period timer after each grid repaint.
+// d.mu must be held.
+func (d *dispatcher) scheduleCursorShow(requested bool) {
+	d.cancelCursorShow()
+	if !requested {
+		return
+	}
+	epoch := d.cursorEpoch
+	d.cursorTimer = time.AfterFunc(d.cursorDelay, func() {
+		d.showCursor(epoch)
+	})
+}
+
+// cancelCursorShow invalidates both a pending timer and a callback already
+// waiting for d.mu. d.mu must be held.
+func (d *dispatcher) cancelCursorShow() {
+	d.cursorEpoch++
+	if d.cursorTimer != nil {
+		d.cursorTimer.Stop()
+		d.cursorTimer = nil
+	}
+}
+
+func (d *dispatcher) showCursor(epoch uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if epoch != d.cursorEpoch {
+		return
+	}
+	d.cursorTimer = nil
+	_, _ = d.out.Write(showCursorSequence)
 }
 
 // clearsScreen reports whether b erases the whole screen: ED 2 or 3
@@ -181,6 +289,8 @@ func passthrough(b []byte) bool {
 		case "1004": // focus reporting
 			return true
 		case "2004": // bracketed paste
+			return true
+		case "2026": // synchronized output: keep partial bidi redraws off screen
 			return true
 		}
 	case 'q': // DECSCUSR (cursor shape) is "CSI <n> SP q"

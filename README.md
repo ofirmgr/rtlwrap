@@ -100,6 +100,32 @@ Or, if you built the binary locally and did not put it on your `PATH`:
 Everything the program prints is reshaped; everything you type is sent through
 untouched.
 
+### Copy original Hebrew text on macOS
+
+Terminal selection normally copies rtlwrap's visual character order, which
+appears reversed when pasted into an application with native RTL support.
+Local macOS builds with cgo enabled restore original text automatically:
+
+```sh
+CGO_ENABLED=1 go build -o rtlwrap ./cmd/rtlwrap
+./rtlwrap <program> [args...]
+```
+
+Select and copy normally. While the hosting terminal is in the foreground,
+rtlwrap watches for new plain-text clipboard contents and matches selections
+against its recent rendered rows. It restores the corresponding original
+character order, preserving English and numbers instead of reversing them.
+The existing clipboard is ignored at startup; unknown or ambiguous selections
+are left unchanged. Watching stops when the wrapped program exits.
+
+This feature reads and replaces matching system clipboard text. Its history is
+bounded and kept only in memory. It requires macOS clipboard access; use
+`--no-restore-copy` to disable it. If restoration cannot start, rtlwrap reports
+the reason and still runs the program. Detection is asynchronous, so an immediate paste can happen before
+restoration. See [copy limitations](docs/limitations.md#copy-and-paste).
+The current release configuration disables cgo, so those prebuilt binaries do
+not include this feature.
+
 ## How it works
 
 rtlwrap runs the program on a pseudo-terminal and feeds its output into a

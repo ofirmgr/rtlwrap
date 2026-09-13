@@ -43,6 +43,17 @@ full-width TUI box, for instance — has no room to shift and stays put, so text
 inside such a box is still left-aligned within it. The non-TTY fallback does
 not align at all.
 
+During streaming grid updates, rtlwrap keeps the terminal cursor hidden until
+there has been no repaint for 50 ms. This prevents intermediate bidi cursor
+positions from flashing across the row; shutdown restores the cursor
+immediately.
+
+Synchronized-output markers (`CSI ?2026 h/l`) are forwarded to the host terminal.
+This preserves redraw boundaries used by interactive applications such as Codex,
+so a supporting terminal displays the completed frame rather than intermediate
+RTL layouts from separate PTY reads. The host terminal must support synchronized
+output for this protection to apply.
+
 **Remaining gaps:**
 
 - **Right alignment counts runes, not cells**, so a right-aligned row holding
@@ -60,7 +71,7 @@ not align at all.
   left showing stale rows until its next redraw.
 - **Escape sequences the grid cannot reproduce** (window title, OSC 52
   clipboard, hyperlinks, mouse reporting, focus reporting, bracketed paste,
-  cursor shape) are forwarded to the terminal verbatim. Anything outside that
+  cursor shape, synchronized output) are forwarded to the terminal verbatim. Anything outside that
   list that a real terminal would act on — and rtlwrap's virtual terminal does
   not implement — is still dropped.
 - **Symptom in the non-TTY fallback:** a partial RTL line with no trailing
@@ -72,6 +83,46 @@ not align at all.
 - A color change **inside** a single Persian word splits shaping at the escape
   sequence, so that word may shape per-segment in the non-TTY fallback. On the
   grid renderer the row is reshaped from cells, so mid-word color is fine.
+
+## Copy and paste
+
+Ordinary terminal selection copies the visual character order emitted by
+rtlwrap, not the original text. Pasting that into an RTL-aware application can
+therefore display Hebrew backwards. Input pasted into rtlwrap is unchanged.
+
+On macOS, clipboard restoration is enabled by default and restores matching selections
+using original rendered-row text and its visual-to-logical mapping. It requires
+a local cgo-enabled build and terminal stdin/stdout. It does not receive the
+terminal's selection or Copy event: it polls clipboard changes while the
+hosting terminal application is in the foreground.
+
+The terminal must be identifiable in rtlwrap's process ancestry. Supported host
+identifiers cover Terminal.app, iTerm2, Warp, Ghostty, Kitty, and Alacritty.
+Detached multiplexers and other embedded terminals may not retain a supported
+ancestor; in that case rtlwrap reports that restoration is unavailable and
+still starts the child. `--no-restore-copy` disables the watcher. The explicit
+`--restore-copy` flag remains available when restoration must be required;
+that flag fails before starting the child if restoration cannot start.
+
+- Only recently retained rows can be restored, including rows that entered
+  scrollback. The cache holds at most 512 unique rows; older output expires.
+- Partial selections must map to a contiguous original character range. Unknown
+  text, conflicting matches, and selections that could already be original text
+  are left unchanged. Multiline selections are matched row by row; they do not
+  reconstruct logical paragraphs across terminal wrapping or rectangular
+  selections.
+- Rows with unsupported shaping mappings, including absorbed Arabic ligature
+  fillers, are skipped. Existing wide-character and grapheme rendering limits
+  also apply to copying.
+- Foreground application checks do not identify the terminal tab or the source
+  of a clipboard write. Identical text copied in another tab can match cached
+  output. Run only one restoration-enabled wrapper per terminal application to
+  avoid competing clipboard watchers.
+- Polling and replacement are asynchronous. An immediate paste can beat
+  restoration. Copying after the wrapped program exits is not corrected.
+- Only a single item containing plain-text representations is eligible.
+  Rich text, images, file lists, and other clipboard types are skipped.
+  Clipboard access denied by macOS prevents restoration.
 
 ## Unicode edge cases
 
@@ -96,5 +147,9 @@ broken).
 - **Known dumb (use rtlwrap here): Ghostty, Warp, foot, xterm, GNOME Terminal,
   Konsole, VS Code's terminal.** These do no bidi, so rtlwrap's visual output
   renders correctly.
+- **Warp punctuation exception:** Warp does not reorder RTL text, but its text
+  renderer still mirrors paired punctuation from the already-visual row.
+  rtlwrap pre-compensates using the bidi levels of that visual row. A blanket
+  disabling of FriBidi mirroring breaks some brackets in LTR-base mixed lines.
 - There is **no reliable auto-detection** of a terminal's bidi support, so
   rtlwrap cannot disable itself. Pick the wrapper based on the terminal.

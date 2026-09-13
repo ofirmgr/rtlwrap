@@ -25,12 +25,20 @@ const (
 // to w, reshaping RTL rows. Not safe for concurrent Write; drive it from one
 // goroutine (the output copy loop).
 type Engine struct {
-	vt         vt10x.Terminal
-	w          io.Writer
-	cols, rows int
-	prev       []string        // last-emitted content per row, for diffing
-	inline     bool            // normal screen: preserve the real terminal's scrollback
-	scrolled   [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
+	vt          vt10x.Terminal
+	w           io.Writer
+	cols, rows  int
+	prev        []string        // last-emitted content per row, for diffing
+	inline      bool            // normal screen: preserve the real terminal's scrollback
+	scrolled    [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
+	rowObserver func(logical, visual []rune, visualToLogical []int)
+}
+
+// SetRowObserver observes the text and mapping used to render each row,
+// including rows entering scrollback. The callback must copy retained slices.
+// Set it before Write; like Engine, this method is not concurrency safe.
+func (e *Engine) SetRowObserver(observer func([]rune, []rune, []int)) {
+	e.rowObserver = observer
 }
 
 // New returns an Engine rendering a cols×rows virtual terminal to w, for an
@@ -239,6 +247,9 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int)
 	}
 
 	vis, v2l, rtl := shape.ShapeRunesDir(logical[:used])
+	if e.rowObserver != nil {
+		e.rowObserver(logical[:used], vis, v2l)
+	}
 	// The dropped tail still needs map entries: the cursor can sit in it.
 	for x := used; x < cols; x++ {
 		v2l = append(v2l, x)

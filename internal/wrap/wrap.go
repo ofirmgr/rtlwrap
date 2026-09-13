@@ -2,13 +2,17 @@ package wrap
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
+	"github.com/Har2yQn78/rtlwrap/internal/clipboard"
+	"github.com/Har2yQn78/rtlwrap/internal/copytext"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -17,11 +21,43 @@ import (
 // shaping the child's output through the pipe. It blocks until the child
 // exits and returns the child's error (an *exec.ExitError carries its code).
 func Run(argv []string) error {
+	return RunWithOptions(argv, Options{})
+}
+
+// Options controls integration with the host system clipboard. The zero value
+// enables restoration automatically on macOS terminals when available.
+type Options struct {
+	RestoreCopy bool // Require restoration instead of falling back if unavailable.
+	DisableCopy bool
+}
+
+// RunWithOptions runs a child with optional original-text copy restoration.
+func RunWithOptions(argv []string, options Options) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("missing program")
+	}
+	tty := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	var copies *copytext.Store
+	if options.RestoreCopy && !tty {
+		return fmt.Errorf("--restore-copy requires terminal stdin and stdout")
+	}
+	if tty && !options.DisableCopy && (runtime.GOOS == "darwin" || options.RestoreCopy) {
+		copies = copytext.New(512)
+		stop, err := clipboard.Start(copies.Restore)
+		if err != nil {
+			if options.RestoreCopy {
+				return fmt.Errorf("--restore-copy: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "rtlwrap: copy restoration unavailable: %v\n", err)
+			copies = nil
+		} else {
+			defer stop()
+		}
+	}
 	// Raw mode first: the cursor query below reads the terminal's reply from
 	// stdin, which needs the line discipline out of the way, and it has to run
 	// before the child exists so the reply cannot be mistaken for the child's
 	// input.
-	tty := term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 	if tty {
 		old, err := term.MakeRaw(int(os.Stdin.Fd()))
 		if err != nil {
@@ -61,6 +97,9 @@ func Run(argv []string) error {
 		d = newInlineDispatcher(os.Stdout, cols, rows, startRow)
 	} else {
 		d = newDispatcher(os.Stdout, cols, rows)
+	}
+	if copies != nil {
+		d.observeRows(copies.Add)
 	}
 
 	// Forward later terminal resizes to the child's PTY and re-size the engine
