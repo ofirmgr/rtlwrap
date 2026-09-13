@@ -32,6 +32,34 @@ type Engine struct {
 	inline      bool            // normal screen: preserve the real terminal's scrollback
 	scrolled    [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
 	rowObserver func(logical, visual []rune, visualToLogical []int)
+	language    string
+	badgeRow    int // one-based; zero means no label is on screen
+	badgeLine   string
+	owned       []bool // rows whose contents are known, excluding pre-existing shell output
+}
+
+// SetLanguage selects the display-only input label. Render with Write(nil).
+func (e *Engine) SetLanguage(language string) { e.language = language }
+
+func (e *Engine) eraseBadge(buf *bytes.Buffer) {
+	if e.badgeRow == 0 {
+		return
+	}
+	fmt.Fprintf(buf, "\x1b[%d;1H\x1b[2K%s", e.badgeRow, e.badgeLine)
+	e.badgeRow = 0
+}
+
+// ClearLanguageBadge restores covered text without changing the child cursor.
+func (e *Engine) ClearLanguageBadge() error {
+	if e.badgeRow == 0 {
+		return nil
+	}
+	var buf bytes.Buffer
+	buf.WriteString("\x1b7\x1b[?7l")
+	e.eraseBadge(&buf)
+	buf.WriteString("\x1b[?7h\x1b8")
+	_, err := e.w.Write(buf.Bytes())
+	return err
 }
 
 // SetRowObserver observes the text and mapping used to render each row,
@@ -74,6 +102,7 @@ func NewInline(w io.Writer, cols, rows, startRow int) *Engine {
 		rows:   rows,
 		prev:   make([]string, rows),
 		inline: true,
+		owned:  make([]bool, rows),
 	}
 	e.vt.SetScrollCallback(func(lines [][]vt10x.Glyph) {
 		e.scrolled = append(e.scrolled, lines...)
@@ -105,15 +134,22 @@ func (e *Engine) seedPrev() {
 // those to go, and only a full repaint can do that.
 func (e *Engine) Invalidate() {
 	e.prev = make([]string, e.rows)
+	e.owned = nil // The child explicitly took ownership of the whole screen.
 }
 
 // Resize resizes the virtual terminal and forces a full repaint next render.
 func (e *Engine) Resize(cols, rows int) {
+	// SIGWINCH arrives after host reflow. Old coordinates no longer identify
+	// the covered cells, so never restore an old row into the resized screen.
+	// The child's next repaint clears any label retained by terminal reflow.
+	e.badgeRow = 0
+	e.badgeLine = ""
 	e.vt.Resize(cols, rows)
 	e.cols, e.rows = cols, rows
 	e.prev = make([]string, rows)
 	e.scrolled = nil // the resize itself reflowed both screens
 	if e.inline {
+		e.owned = make([]bool, rows)
 		// Take the reflowed grid as already on screen rather than repainting
 		// it: rows the child never wrote hold the shell's own output, and
 		// painting the grid's blanks over them would erase it. The child gets
@@ -146,6 +182,7 @@ func (e *Engine) render() error {
 	// Hide cursor + disable autowrap during the repaint so a full-width row's
 	// last column can't scroll the screen. Restored at the end.
 	buf.WriteString("\x1b[?25l\x1b[?7l")
+	e.eraseBadge(&buf) // Restore before scrolling so labels never enter scrollback.
 
 	// Push the rows that left the grid through the real terminal's top row and
 	// scroll, so they enter its scrollback exactly as the user would have seen
@@ -162,6 +199,10 @@ func (e *Engine) render() error {
 			}
 			fmt.Fprintf(&buf, "\x1b[%d;1H\n", rows) // scroll: top row -> scrollback
 			copy(e.prev, e.prev[1:])
+			if e.owned != nil {
+				copy(e.owned, e.owned[1:])
+				e.owned[rows-1] = true
+			}
 			e.prev[rows-1] = "" // scrolled in blank: repaint whatever lands here
 		}
 	}
@@ -175,11 +216,13 @@ func (e *Engine) render() error {
 			continue
 		}
 		e.prev[y] = line
+		if e.owned != nil {
+			e.owned[y] = true
+		}
 		fmt.Fprintf(&buf, "\x1b[%d;1H\x1b[2K", y+1) // move to row start, clear it
 		buf.WriteString(line)
 	}
 
-	buf.WriteString("\x1b[?7h") // re-enable autowrap
 	cur := e.vt.Cursor()
 	cx := cur.X
 	if cur.Y >= 0 && cur.Y < rows {
@@ -188,6 +231,20 @@ func (e *Engine) render() error {
 			cx = cols - 1
 		}
 	}
+	label := ""
+	switch e.language {
+	case "he":
+		label = "ʰᵉ"
+	case "en":
+		label = "ᵉⁿ"
+	}
+	if label != "" && e.vt.CursorVisible() && cols >= 2 && cur.Y > 0 && cur.Y < rows &&
+		(e.owned == nil || e.owned[cur.Y-1]) {
+		x := min(max(cx, 0), cols-2)
+		e.badgeRow, e.badgeLine = cur.Y, e.prev[cur.Y-1]
+		fmt.Fprintf(&buf, "\x1b[%d;%dH\x1b[0;2m%s\x1b[0m", cur.Y, x+1, label)
+	}
+	buf.WriteString("\x1b[?7h") // re-enable autowrap
 	fmt.Fprintf(&buf, "\x1b[%d;%dH", cur.Y+1, cx+1)
 	if e.vt.CursorVisible() {
 		buf.WriteString("\x1b[?25h")

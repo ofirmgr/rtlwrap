@@ -20,6 +20,42 @@ type dispatcher struct {
 	rows        int
 	buf         []byte // bytes accrued for the current consumer within one Write
 	rowObserver func([]rune, []rune, []int)
+	language    string
+}
+
+// setLanguage updates an idle terminal too, serialized with child output.
+func (d *dispatcher) setLanguage(language string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.language == language {
+		return nil
+	}
+	d.language = language
+	if d.main != nil {
+		d.main.SetLanguage(language)
+	}
+	if d.engine != nil {
+		d.engine.SetLanguage(language)
+	}
+	if d.alt {
+		_, err := d.engine.Write(nil)
+		return err
+	}
+	if d.main != nil {
+		_, err := d.main.Write(nil)
+		return err
+	}
+	return nil
+}
+
+func (d *dispatcher) clearLanguageBadge() error {
+	if d.alt {
+		return d.engine.ClearLanguageBadge()
+	}
+	if d.main != nil {
+		return d.main.ClearLanguageBadge()
+	}
+	return nil
 }
 
 // observeRows attaches copy restoration to both grids. Call before Write.
@@ -81,6 +117,9 @@ func (d *dispatcher) Write(chunk []byte) (int, error) {
 				if err := d.flush(); err != nil { // hand off buffered span
 					return 0, err
 				}
+				if err := d.clearLanguageBadge(); err != nil {
+					return 0, err
+				}
 				if _, err := d.out.Write(t.Bytes); err != nil { // switch real buffers
 					return 0, err
 				}
@@ -103,6 +142,9 @@ func (d *dispatcher) Close() error {
 		d.buf = append(d.buf, t.Bytes...)
 	}
 	if err := d.flush(); err != nil {
+		return err
+	}
+	if err := d.clearLanguageBadge(); err != nil {
 		return err
 	}
 	if d.main != nil {
@@ -153,6 +195,7 @@ func (d *dispatcher) setAlt(enter bool) error {
 		// alt buffer, so the grid starts blank and matches.
 		d.engine = termstate.New(d.out, d.cols, d.rows)
 		d.engine.SetRowObserver(d.rowObserver)
+		d.engine.SetLanguage(d.language)
 	} else {
 		d.engine = nil
 		if d.main != nil {

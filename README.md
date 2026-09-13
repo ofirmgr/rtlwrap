@@ -126,6 +126,35 @@ restoration. See [copy limitations](docs/limitations.md#copy-and-paste).
 The current release configuration disables cgo, so those prebuilt binaries do
 not include this feature.
 
+### Input-language label on macOS
+
+Local builds with cgo enabled show a compact `ʰᵉ` (Hebrew) or `ᵉⁿ` (English)
+on the terminal row above the blinking text caret. The label follows the
+visually reordered caret and checks a refreshed keyboard-language snapshot every
+150 ms, including while the child is idle. Restart the wrapped program after
+rebuilding `rtlwrap` to use it.
+
+The macOS command keeps its original main thread running a Core Foundation event
+loop, which delivers keyboard-source changes. `internal/inputlang` reads Carbon
+on that thread and publishes a snapshot for the terminal renderer. Replacing
+this with background Carbon polling alone can leave the startup language cached.
+When validating this integration, switch English/Hebrew/English while one wrapped
+process stays running and idle; checking only its startup label misses stale
+input-source state.
+
+The label uses superscript characters in two terminal cells; terminal output
+cannot set a floating label's font size. It temporarily covers those cells and
+restores the underlying row when it moves or disappears. It hides for other
+languages, hidden cursors, the top screen row, and pre-existing shell rows whose
+contents rtlwrap cannot restore. It is removed before scrolling, screen changes,
+and exit, and is excluded from the original-text copy history. A terminal's own
+selection can still include a currently visible label. Builds without cgo and
+non-macOS builds do not show it.
+
+After a terminal resize, a reflowed label can remain until the child repaints.
+rtlwrap discards its old label coordinates to avoid restoring text into the
+wrong row of the resized terminal.
+
 ## How it works
 
 rtlwrap runs the program on a pseudo-terminal and feeds its output into a

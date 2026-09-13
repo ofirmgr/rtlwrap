@@ -36,7 +36,7 @@ func main() {
 		fmt.Println("rtlwrap", version)
 		return
 	}
-	err := wrap.RunWithOptions(args, options)
+	err := runWithInputEvents(func() error { return wrap.RunWithOptions(args, options) })
 	if err == nil {
 		return
 	}

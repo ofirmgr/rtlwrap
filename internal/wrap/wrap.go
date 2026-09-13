@@ -13,6 +13,7 @@ import (
 
 	"github.com/Har2yQn78/rtlwrap/internal/clipboard"
 	"github.com/Har2yQn78/rtlwrap/internal/copytext"
+	"github.com/Har2yQn78/rtlwrap/internal/inputlang"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -101,6 +102,25 @@ func RunWithOptions(argv []string, options Options) error {
 	if copies != nil {
 		d.observeRows(copies.Add)
 	}
+	stopLanguage := func() {}
+	if tty {
+		_ = d.setLanguage(inputlang.Current())
+		stop, done := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(done)
+			ticker := time.NewTicker(150 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					_ = d.setLanguage(inputlang.Current())
+				}
+			}
+		}()
+		stopLanguage = func() { close(stop); <-done }
+	}
 
 	// Forward later terminal resizes to the child's PTY and re-size the engine
 	// from the PTY, not from os.Stdout: an embedded terminal (e.g. Zed) can
@@ -130,6 +150,7 @@ func RunWithOptions(argv []string, options Options) error {
 	}()
 
 	_, _ = io.Copy(d, ptmx) // returns when the child closes the PTY
+	stopLanguage()
 	_ = d.Close()
 
 	return c.Wait()
