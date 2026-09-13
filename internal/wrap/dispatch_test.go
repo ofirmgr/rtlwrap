@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Har2yQn78/rtlwrap/internal/copytext"
 	"github.com/Har2yQn78/rtlwrap/internal/shape"
@@ -228,4 +229,91 @@ func TestClearsScreen(t *testing.T) {
 			t.Errorf("clearsScreen(%q) = true, want false", s)
 		}
 	}
+}
+
+func TestSynchronizedRedrawHoldsIntermediateCaret(t *testing.T) {
+	for _, alt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("alt=%v", alt), func(t *testing.T) {
+			var out bytes.Buffer
+			d := newInlineDispatcher(&out, 40, 3, 0)
+			defer func() { _ = d.Close() }()
+			if alt {
+				_, _ = d.Write([]byte("\x1b[?1049h"))
+			}
+			out.Reset()
+			for _, chunk := range []string{"\x1b[?2026h", "\r\x1b[2K› שלום", " עולם", "\x1b[1;9H"} {
+				if _, err := d.Write([]byte(chunk)); err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(out.String(), "\x1b[2K") || strings.Contains(out.String(), "\x1b[?25h") {
+					t.Fatalf("partial redraw exposed before end marker: %q", out.String())
+				}
+			}
+			if _, err := d.Write([]byte("\x1b[?2026l")); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(out.String(), "\x1b[?25h") != 1 {
+				t.Fatalf("want one final caret restoration: %q", out.String())
+			}
+			if !strings.Contains(out.String(), shape.Shape("› שלום עולם")) {
+				t.Fatal("completed row missing")
+			}
+		})
+	}
+}
+
+// Missing end markers recover on timeout or EOF, including hidden cursors.
+func TestSynchronizedRedrawRecovery(t *testing.T) {
+	for _, eof := range []bool{false, true} {
+		t.Run(fmt.Sprintf("eof=%v", eof), func(t *testing.T) {
+			out := &syncEndWriter{ended: make(chan struct{}, 1)}
+			d := newInlineDispatcher(out, 40, 3, 0)
+			defer func() { _ = d.Close() }()
+			if _, err := d.Write([]byte("\x1b[?2026h\x1b[?25lשלום")); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.setLanguage("he"); err != nil {
+				t.Fatal(err)
+			}
+			if eof {
+				if err := d.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-out.ended:
+			case <-time.After(3 * time.Second):
+				t.Fatal("unfinished synchronized frame did not recover")
+			}
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.synchronized || d.syncErr != nil {
+				t.Fatalf("recovery state: synchronized=%v err=%v", d.synchronized, d.syncErr)
+			}
+			got := out.String()
+			if !strings.Contains(got, shape.Shape("שלום")) {
+				t.Fatal("recovery lost pending text")
+			}
+			end := strings.Index(got, "\x1b[?2026l")
+			if strings.Contains(got[:end], "\x1b[?25h") {
+				t.Fatal("recovery showed application-hidden cursor")
+			}
+		})
+	}
+}
+
+type syncEndWriter struct {
+	bytes.Buffer
+	ended chan struct{}
+}
+
+func (w *syncEndWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	if bytes.Contains(p, []byte("\x1b[?2026l")) {
+		select {
+		case w.ended <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
 }

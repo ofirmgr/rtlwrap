@@ -61,11 +61,24 @@ func ShapeRunes(logical []rune) (visual []rune, visualToLogical []int) {
 // Callers that lay the line out on a grid use it to right-align an RTL
 // paragraph, which is where a bidi-aware renderer would put it.
 func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bool) {
+	visual, visualToLogical, rtl, _ = ShapeRunesLayout(logical)
+	return
+}
+
+// ShapeRunesLayout also maps logical insertion boundaries to visual columns.
+// At a direction boundary, the caret follows the preceding logical character,
+// keeping the typing position on the trailing edge of the character just typed.
+func ShapeRunesLayout(logical []rune) (visual []rune, visualToLogical []int, rtl bool, carets []int) {
 	if len(logical) == 0 {
-		return nil, nil, false
+		return nil, nil, false, []int{0}
 	}
 	base := fribidi.ParType(fribidi.ON) // auto-detect base direction
-	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, logical, &base)
+	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, neutralizeBraille(logical), &base)
+	for x, li := range vis.VisualToLogical {
+		if isBraille(logical[li]) {
+			vis.Str[x] = logical[li]
+		}
+	}
 	// Warp does not reorder RTL text, but its text renderer still mirrors paired
 	// punctuation according to levels resolved from the bytes it receives. Those
 	// bytes are already in visual order here, so pre-mirror exactly the glyphs
@@ -76,8 +89,47 @@ func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bo
 	if os.Getenv("TERM_PROGRAM") == "WarpTerminal" {
 		preMirrorForWarp(vis.Str)
 	}
-	return vis.Str, vis.VisualToLogical, base.IsRtl()
+	carets = make([]int, len(logical)+1)
+	for x, li := range vis.VisualToLogical {
+		if vis.EmbeddingLevels[li]%2 == 1 {
+			carets[li+1] = x
+			if li == 0 {
+				carets[0] = x + 1
+			}
+		} else {
+			carets[li+1] = x + 1
+			if li == 0 {
+				carets[0] = x
+			}
+		}
+	}
+	return vis.Str, vis.VisualToLogical, base.IsRtl(), carets
 }
+
+// Terminal programs draw spinners, charts, and animated dots with Braille
+// patterns, which Unicode classifies as strong LTR. Codex, for example, animates
+// dots in blank cells beside its prompt; a dot landing between "›" and typed
+// Hebrew would flip the row to LTR for one frame and move the caret across the
+// screen. Resolve them as neutral graphics, like box drawing. U+2500 is a
+// non-mirrored, non-joining ON character, so it changes only the bidi class.
+func neutralizeBraille(logical []rune) []rune {
+	var out []rune
+	for i, r := range logical {
+		if !isBraille(r) {
+			continue
+		}
+		if out == nil {
+			out = append([]rune(nil), logical...)
+		}
+		out[i] = '─'
+	}
+	if out == nil {
+		return logical
+	}
+	return out
+}
+
+func isBraille(r rune) bool { return r >= 0x2800 && r <= 0x28ff }
 
 func preMirrorForWarp(visual []rune) {
 	types := make([]fribidi.CharType, len(visual))

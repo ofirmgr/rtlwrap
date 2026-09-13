@@ -25,18 +25,22 @@ const (
 // to w, reshaping RTL rows. Not safe for concurrent Write; drive it from one
 // goroutine (the output copy loop).
 type Engine struct {
-	vt          vt10x.Terminal
-	w           io.Writer
-	cols, rows  int
-	prev        []string        // last-emitted content per row, for diffing
-	inline      bool            // normal screen: preserve the real terminal's scrollback
-	scrolled    [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
-	rowObserver func(logical, visual []rune, visualToLogical []int)
-	language    string
-	badgeRow    int // one-based; zero means no label is on screen
-	badgeLine   string
-	owned       []bool // rows whose contents are known, excluding pre-existing shell output
+	vt           vt10x.Terminal
+	w            io.Writer
+	cols, rows   int
+	prev         []string        // last-emitted content per row, for diffing
+	inline       bool            // normal screen: preserve the real terminal's scrollback
+	scrolled     [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
+	rowObserver  func(logical, visual []rune, visualToLogical []int)
+	language     string
+	badgeRow     int // one-based; zero means no label is on screen
+	badgeLine    string
+	owned        []bool // rows whose contents are known, excluding pre-existing shell output
+	synchronized bool   // apply child updates without displaying an incomplete frame
 }
+
+// SetSynchronizedOutput defers painting until the dispatcher completes the frame.
+func (e *Engine) SetSynchronizedOutput(enabled bool) { e.synchronized = enabled }
 
 // SetLanguage selects the display-only input label. Render with Write(nil).
 func (e *Engine) SetLanguage(language string) { e.language = language }
@@ -170,6 +174,9 @@ func (e *Engine) Write(p []byte) (int, error) {
 }
 
 func (e *Engine) render() error {
+	if e.synchronized {
+		return nil
+	}
 	e.vt.Lock()
 	defer e.vt.Unlock()
 
@@ -192,7 +199,7 @@ func (e *Engine) render() error {
 		out := e.scrolled
 		e.scrolled = nil
 		for _, cells := range out {
-			line, _, _ := e.renderCells(cells, cols)
+			line, _, _ := e.renderCells(cells, cols, 0)
 			if line != e.prev[0] { // already on the top row: no need to repaint
 				buf.WriteString("\x1b[1;1H\x1b[2K")
 				buf.WriteString(line)
@@ -207,11 +214,11 @@ func (e *Engine) render() error {
 		}
 	}
 
-	l2v := make([][]int, rows) // per-row visualToLogical, kept for cursor mapping
-	pads := make([]int, rows)  // per-row left pad of a right-aligned RTL row
+	caretMaps := make([][]int, rows) // logical insertion boundaries to visual columns
+	pads := make([]int, rows)        // per-row left pad of a right-aligned RTL row
 	for y := 0; y < rows; y++ {
-		line, v2l, pad := e.renderRow(y, cols)
-		l2v[y], pads[y] = v2l, pad
+		line, carets, pad := e.renderRow(y, cols)
+		caretMaps[y], pads[y] = carets, pad
 		if line == e.prev[y] {
 			continue
 		}
@@ -226,7 +233,7 @@ func (e *Engine) render() error {
 	cur := e.vt.Cursor()
 	cx := cur.X
 	if cur.Y >= 0 && cur.Y < rows {
-		cx = visualX(l2v[cur.Y], cur.X, cols) + pads[cur.Y]
+		cx = visualX(caretMaps[cur.Y], cur.X, cols) + pads[cur.Y]
 		if cx > cols-1 {
 			cx = cols - 1
 		}
@@ -255,17 +262,22 @@ func (e *Engine) render() error {
 }
 
 // renderRow builds the SGR-encoded visual string for grid row y and returns it
-// with that row's visualToLogical map (nil if the row had no runes).
+// with that row's logical insertion-boundary map.
 func (e *Engine) renderRow(y, cols int) (string, []int, int) {
 	cells := make([]vt10x.Glyph, cols)
 	for x := 0; x < cols; x++ {
 		cells[x] = e.vt.Cell(x, y)
 	}
-	return e.renderCells(cells, cols)
+	// Spaces before the insertion point belong to the editable text, too.
+	minUsed := 0
+	if cur := e.vt.Cursor(); cur.Y == y {
+		minUsed = min(cur.X, cols)
+	}
+	return e.renderCells(cells, cols, minUsed)
 }
 
 // renderCells builds the SGR-encoded visual string for one row of glyphs (from
-// the grid, or from a row that has scrolled off it), its visualToLogical map,
+// the grid, or from a row that has scrolled off it), its insertion-boundary map,
 // and the left pad the line is printed at.
 //
 // Only the row's used prefix is reordered. A terminal row is padded to the full
@@ -279,14 +291,14 @@ func (e *Engine) renderRow(y, cols int) (string, []int, int) {
 // line is printed pad cells in from the left so it ends at the right edge,
 // which is where a bidi-aware renderer puts an RTL paragraph. The pad is a
 // cursor-forward move over the just-cleared row, so it paints nothing itself.
-func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int) {
+func (e *Engine) renderCells(cells []vt10x.Glyph, cols, minUsed int) (string, []int, int) {
 	type attr struct {
 		fg, bg vt10x.Color
 		mode   int16
 	}
 	logical := make([]rune, cols)
 	attrs := make([]attr, cols)
-	used := 0
+	used := minUsed
 	for x := 0; x < cols; x++ {
 		g := vt10x.Glyph{FG: vt10x.DefaultFG, BG: vt10x.DefaultBG}
 		if x < len(cells) {
@@ -299,17 +311,17 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int)
 		logical[x] = r
 		attrs[x] = attr{g.FG, g.BG, g.Mode}
 		if r != ' ' || g.BG != vt10x.DefaultBG || g.Mode&(attrUnderline|attrReverse) != 0 {
-			used = x + 1
+			used = max(used, x+1)
 		}
 	}
 
-	vis, v2l, rtl := shape.ShapeRunesDir(logical[:used])
+	vis, v2l, rtl, carets := shape.ShapeRunesLayout(logical[:used])
 	if e.rowObserver != nil {
 		e.rowObserver(logical[:used], vis, v2l)
 	}
 	// The dropped tail still needs map entries: the cursor can sit in it.
-	for x := used; x < cols; x++ {
-		v2l = append(v2l, x)
+	for x := used + 1; x <= cols; x++ {
+		carets = append(carets, x)
 	}
 
 	// Width in cells of what is actually painted: the U+FEFF fillers below
@@ -343,7 +355,7 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int)
 		sb.WriteRune(r)
 	}
 	sb.WriteString("\x1b[0m")
-	return sb.String(), v2l, pad
+	return sb.String(), carets, pad
 }
 
 // visualX maps a logical column to its visual column in a reshaped row.
@@ -351,16 +363,11 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols int) (string, []int, int)
 // ponytail: does not subtract stripped U+FEFF fillers to the cursor's left, so
 // in a row containing lam-alef ligatures the cursor can sit one cell off per
 // ligature. Rare; fix by counting skipped fillers when it actually bites.
-func visualX(v2l []int, logicalX, cols int) int {
-	for i, li := range v2l {
-		if li == logicalX {
-			return i
-		}
+func visualX(carets []int, logicalX, cols int) int {
+	if logicalX >= 0 && logicalX < len(carets) {
+		return min(carets[logicalX], cols-1)
 	}
-	if logicalX >= cols {
-		return cols - 1
-	}
-	return logicalX
+	return min(logicalX, cols-1)
 }
 
 // sgr renders a full SGR sequence (leading reset, then attributes and colors)

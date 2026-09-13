@@ -62,9 +62,9 @@ func TestEngineDiffSkipsUnchanged(t *testing.T) {
 }
 
 func TestVisualX(t *testing.T) {
-	// visual rune 0 came from logical 3, rune 1 from logical 2, ...
-	v2l := []int{3, 2, 1, 0}
-	for logical, wantVis := range map[int]int{0: 3, 3: 0, 2: 1} {
+	// Logical insertion boundaries for a four-character RTL word.
+	v2l := []int{4, 3, 2, 1, 0}
+	for logical, wantVis := range map[int]int{0: 4, 3: 1, 2: 2, 4: 0} {
 		if got := visualX(v2l, logical, 20); got != wantVis {
 			t.Errorf("visualX(logical=%d) = %d, want %d", logical, got, wantVis)
 		}
@@ -176,14 +176,104 @@ func TestLTRRowNotAligned(t *testing.T) {
 }
 
 // The cursor has to follow the line it sits on: after a right-aligned RTL row
-// it lands at the right edge, not at the logical column.
+// it lands at the left edge of the word, after its final logical character.
 func TestRTLCursorFollowsAlignment(t *testing.T) {
 	var buf bytes.Buffer
 	e := NewInline(&buf, 20, 2, 0)
 	if _, err := e.Write([]byte("שלום")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "\x1b[1;20H") {
+	if !strings.Contains(buf.String(), "\x1b[1;17H") {
 		t.Errorf("cursor not moved to the aligned row end\ngot %q", buf.String())
+	}
+}
+
+// Insertion positions must follow Hebrew typing, including spaces and edits,
+// rather than jumping to the blank cells after the logical text.
+func TestHebrewInsertionCaret(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		want        int
+	}{
+		{"one letter", "ש", 19},
+		{"word", "שלום", 16},
+		{"space", "שלום ", 15},
+		{"second word", "שלום ע", 14},
+		{"inside word", "שלום\x1b[D", 17},
+		{"word start", "שלום\r", 19},
+		{"LTR prompt", "a> שלום", 3},
+		{"LTR control", "> hello", 7},
+		{"digits", "a> שלום 12", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			e := NewInline(&out, 20, 3, 0)
+			if _, err := e.Write([]byte(tc.input)); err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("\x1b[1;%dH\x1b[?25h", tc.want+1)
+			if !strings.HasSuffix(out.String(), want) {
+				t.Fatalf("caret suffix want %q, got %q", want, out.String())
+			}
+		})
+	}
+}
+
+// Separate PTY writes must retain the same insertion affinity on every key.
+func TestHebrewCaretEveryKeystroke(t *testing.T) {
+	for _, warp := range []string{"", "WarpTerminal"} {
+		t.Run(warp, func(t *testing.T) {
+			t.Setenv("TERM_PROGRAM", warp)
+			var out bytes.Buffer
+			e := NewInline(&out, 30, 3, 0)
+			for i, r := range []rune("שלום עולם") {
+				out.Reset()
+				if _, err := e.Write([]byte(string(r))); err != nil {
+					t.Fatal(err)
+				}
+				want := fmt.Sprintf("\x1b[1;%dH\x1b[?25h", 30-i)
+				if !strings.HasSuffix(out.String(), want) {
+					t.Fatalf("key %d: want %q, got %q", i, want, out.String())
+				}
+				out.Reset()
+				if _, err := e.Write(nil); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasSuffix(out.String(), want) {
+					t.Fatalf("idle repaint after key %d moved caret", i)
+				}
+			}
+		})
+	}
+}
+
+// Codex animates Braille dots in blank cells, including the one between its
+// prompt and the typed text. A dot there must not flip the row to LTR and move
+// the caret to the other side of the screen for one animation frame.
+func TestBrailleAnimationKeepsHebrewCaret(t *testing.T) {
+	var out bytes.Buffer
+	e := NewInline(&out, 30, 3, 0)
+	if _, err := e.Write([]byte("› שלום")); err != nil {
+		t.Fatal(err)
+	}
+	const want = "\x1b[1;25H\x1b[?25h"
+	if !strings.HasSuffix(out.String(), want) {
+		t.Fatalf("baseline caret want %q, got %q", want, out.String())
+	}
+	for _, frame := range []string{"\x1b[1;2H⠁\x1b[1;7H", "\x1b[1;25H⠄\x1b[1;7H", "\x1b[1;2H \x1b[1;7H"} {
+		out.Reset()
+		if _, err := e.Write([]byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(out.String(), want) {
+			t.Fatalf("frame %q moved caret: %q", frame, out.String())
+		}
+	}
+	out.Reset()
+	if _, err := e.Write([]byte("\x1b[1;2H⠂\x1b[1;7H")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "⠂") {
+		t.Fatalf("Braille glyph not emitted: %q", out.String())
 	}
 }

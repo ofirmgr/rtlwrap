@@ -43,16 +43,36 @@ full-width TUI box, for instance — has no room to shift and stays put, so text
 inside such a box is still left-aligned within it. The non-TTY fallback does
 not align at all.
 
+Caret columns represent insertion boundaries, with affinity to the preceding
+logical character. Hebrew typing therefore advances along the left edge of the
+RTL run, including typed spaces. At mixed-direction boundaries, movement follows
+the preceding character's resolved bidi direction. Regression coverage includes
+per-keystroke Hebrew input, idle repaints, cursor movement, LTR prompts, and digits
+in `internal/termstate/engine_test.go`.
+
+Braille patterns (U+2800–U+28FF) are resolved as neutral graphics when choosing
+row direction and bidi runs, and are then emitted unchanged. Terminal programs
+use them for spinners, charts, and animations; Codex animates dots in blank
+cells, including the cell between its `›` prompt and typed text. As strong LTR
+characters, those dots flipped the row direction between animation frames and
+moved the caret from one side of the screen to the other. Actual Braille text is
+therefore laid out like punctuation rather than as an LTR run. Rebuild and
+restart the wrapper before
+checking a renderer change in Warp; existing processes keep their old code.
+
 During grid updates, cursor hiding, painting, final positioning, and restoration
 are emitted in the same write. There is no quiet-period timer: continuous status
 updates must not keep the cursor hidden between repaints. Application-requested
 cursor hiding is preserved; shutdown restores the cursor immediately.
 
-Synchronized-output markers (`CSI ?2026 h/l`) are forwarded to the host terminal.
-This preserves redraw boundaries used by interactive applications such as Codex,
-so a supporting terminal displays the completed frame rather than intermediate
-RTL layouts from separate PTY reads. The host terminal must support synchronized
-output for this protection to apply.
+Synchronized-output markers (`CSI ?2026 h/l`) defer grid painting inside rtlwrap
+until the end marker, then render the completed grid and final cursor position.
+Markers are also forwarded to the host terminal. This prevents separate PTY
+reads within a Codex redraw from producing intermediate RTL layouts even when
+the host does not honor synchronized output. A missing end marker releases the
+pending frame after one second or at EOF; application-requested cursor hiding
+is preserved until shutdown. Programs without these markers continue rendering
+on each write. Regression coverage is in `internal/wrap/dispatch_test.go`.
 
 **Remaining gaps:**
 

@@ -3,24 +3,75 @@ package wrap
 import (
 	"io"
 	"sync"
+	"time"
 
 	"github.com/Har2yQn78/rtlwrap/internal/parser"
 	"github.com/Har2yQn78/rtlwrap/internal/termstate"
 )
 
 type dispatcher struct {
-	mu          sync.Mutex // guards alt/engine/size against the SIGWINCH resize
-	tk          parser.Tokenizer
-	out         io.Writer
-	pipe        *pipe             // scrolling renderer, used when there is no grid
-	main        *termstate.Engine // normal-screen grid renderer (nil: use pipe)
-	engine      *termstate.Engine // alt-screen grid renderer, nil outside alt
-	alt         bool
-	cols        int
-	rows        int
-	buf         []byte // bytes accrued for the current consumer within one Write
-	rowObserver func([]rune, []rune, []int)
-	language    string
+	mu           sync.Mutex // guards alt/engine/size against the SIGWINCH resize
+	tk           parser.Tokenizer
+	out          io.Writer
+	pipe         *pipe             // scrolling renderer, used when there is no grid
+	main         *termstate.Engine // normal-screen grid renderer (nil: use pipe)
+	engine       *termstate.Engine // alt-screen grid renderer, nil outside alt
+	alt          bool
+	cols         int
+	rows         int
+	buf          []byte // bytes accrued for the current consumer within one Write
+	rowObserver  func([]rune, []rune, []int)
+	language     string
+	synchronized bool
+	syncTimer    *time.Timer
+	syncEpoch    uint64
+	syncErr      error
+}
+
+// setSynchronizedOutput runs under mu. A missing end marker must not freeze the
+// display indefinitely. The epoch prevents an expired callback ending a newer frame.
+func (d *dispatcher) setSynchronizedOutput(enabled bool) error {
+	if err := d.flush(); err != nil {
+		return err
+	}
+	d.syncEpoch++
+	if d.syncTimer != nil {
+		d.syncTimer.Stop()
+		d.syncTimer = nil
+	}
+	d.synchronized = enabled
+	if d.main != nil {
+		d.main.SetSynchronizedOutput(enabled)
+	}
+	if d.engine != nil {
+		d.engine.SetSynchronizedOutput(enabled)
+	}
+	if enabled {
+		epoch := d.syncEpoch
+		d.syncTimer = time.AfterFunc(time.Second, func() {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.synchronized && d.syncEpoch == epoch {
+				d.syncErr = d.setSynchronizedOutput(false)
+			}
+		})
+	} else {
+		var err error
+		if d.alt {
+			_, err = d.engine.Write(nil)
+		} else if d.main != nil {
+			_, err = d.main.Write(nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	marker := "\x1b[?2026l"
+	if enabled {
+		marker = "\x1b[?2026h"
+	}
+	_, err := d.out.Write([]byte(marker))
+	return err
 }
 
 // setLanguage updates an idle terminal too, serialized with child output.
@@ -90,8 +141,17 @@ func newInlineDispatcher(out io.Writer, cols, rows, startRow int) *dispatcher {
 func (d *dispatcher) Write(chunk []byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.syncErr != nil {
+		return 0, d.syncErr
+	}
 	for _, t := range d.tk.Push(chunk) {
 		if t.Kind == parser.ANSI {
+			if string(t.Bytes) == "\x1b[?2026h" || string(t.Bytes) == "\x1b[?2026l" {
+				if err := d.setSynchronizedOutput(t.Bytes[len(t.Bytes)-1] == 'h'); err != nil {
+					return 0, err
+				}
+				continue
+			}
 			if passthrough(t.Bytes) {
 				// Layout-neutral and meant for the real terminal (mouse
 				// reporting, bracketed paste, cursor shape, OSC titles and
@@ -138,8 +198,17 @@ func (d *dispatcher) Write(chunk []byte) (int, error) {
 func (d *dispatcher) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.syncTimer != nil {
+		d.syncTimer.Stop()
+		d.syncTimer = nil
+	}
 	for _, t := range d.tk.Flush() {
 		d.buf = append(d.buf, t.Bytes...)
+	}
+	if d.synchronized {
+		if err := d.setSynchronizedOutput(false); err != nil {
+			return err
+		}
 	}
 	if err := d.flush(); err != nil {
 		return err
@@ -194,6 +263,7 @@ func (d *dispatcher) setAlt(enter bool) error {
 		// Fresh engine per alt session: the real terminal just cleared to its
 		// alt buffer, so the grid starts blank and matches.
 		d.engine = termstate.New(d.out, d.cols, d.rows)
+		d.engine.SetSynchronizedOutput(d.synchronized)
 		d.engine.SetRowObserver(d.rowObserver)
 		d.engine.SetLanguage(d.language)
 	} else {
