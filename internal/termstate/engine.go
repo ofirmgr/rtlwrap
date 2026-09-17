@@ -234,16 +234,14 @@ func (e *Engine) render() error {
 	cx := cur.X
 	if cur.Y >= 0 && cur.Y < rows {
 		cx = visualX(caretMaps[cur.Y], cur.X, cols) + pads[cur.Y]
-		if cx > cols-1 {
-			cx = cols - 1
-		}
+		cx = min(max(cx, 0), cols-1)
 	}
 	label := ""
 	switch e.language {
 	case "he":
-		label = "ʰᵉ"
+		label = "he"
 	case "en":
-		label = "ᵉⁿ"
+		label = "en"
 	}
 	if label != "" && e.vt.CursorVisible() && cols >= 2 && cur.Y > 0 && cur.Y < rows &&
 		(e.owned == nil || e.owned[cur.Y-1]) {

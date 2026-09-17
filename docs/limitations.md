@@ -44,9 +44,13 @@ inside such a box is still left-aligned within it. The non-TTY fallback does
 not align at all.
 
 Caret columns represent insertion boundaries, with affinity to the preceding
-logical character. Hebrew typing therefore advances along the left edge of the
-RTL run, including typed spaces. At mixed-direction boundaries, movement follows
-the preceding character's resolved bidi direction. Regression coverage includes
+logical character: the cursor sits on the cell where the next character is drawn,
+left of a preceding RTL character and right of a preceding LTR one. Hebrew typing
+therefore advances one empty cell left of the RTL run, including typed spaces,
+and a block cursor never covers the letter just typed. With a bar (I-beam)
+cursor this leaves a one-cell gap left of the last Hebrew letter; the host
+terminal's cursor shape is not detected. At mixed-direction boundaries, movement
+follows the preceding character's resolved bidi direction. Regression coverage includes
 per-keystroke Hebrew input, idle repaints, cursor movement, LTR prompts, and digits
 in `internal/termstate/engine_test.go`.
 

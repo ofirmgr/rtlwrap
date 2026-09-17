@@ -1,6 +1,7 @@
 package shape
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -104,4 +105,21 @@ func simulateWarpMirroring(visual string) string {
 	levels, _ := fribidi.GetParEmbeddingLevels(types, brackets, &base)
 	fribidi.Shape(fribidi.ShapeMirroring, levels, nil, runes)
 	return string(runes)
+}
+
+// Each insertion boundary maps to the cell where the next character is drawn:
+// left of the preceding RTL character, right of the preceding LTR one.
+func TestCaretsPointAtNextCell(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []int
+	}{
+		{"שלום", []int{3, 2, 1, 0, -1}},
+		{"abc", []int{0, 1, 2, 3}},
+	} {
+		_, _, _, got := ShapeRunesLayout([]rune(tc.in))
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%q: carets = %v, want %v", tc.in, got, tc.want)
+		}
+	}
 }

@@ -15,7 +15,7 @@ func TestLanguageBadgeRestoresTextAndCursor(t *testing.T) {
 	e.SetLanguage("he")
 	_, _ = e.Write([]byte("underlying text\r\nabc"))
 	_, _ = screen.Write(out.Bytes())
-	if screen.Cell(3, 0).Char != 'ʰ' || screen.Cell(4, 0).Char != 'ᵉ' {
+	if screen.Cell(3, 0).Char != 'h' || screen.Cell(4, 0).Char != 'e' {
 		t.Fatal("Hebrew label not above caret")
 	}
 	if cur := screen.Cursor(); cur.X != 3 || cur.Y != 1 {
@@ -28,7 +28,7 @@ func TestLanguageBadgeRestoresTextAndCursor(t *testing.T) {
 	if screen.Cell(3, 0).Char != 'e' || screen.Cell(4, 0).Char != 'r' {
 		t.Fatal("underlying text not restored")
 	}
-	if screen.Cell(5, 1).Char != 'ᵉ' || screen.Cell(6, 1).Char != 'ⁿ' {
+	if screen.Cell(5, 1).Char != 'e' || screen.Cell(6, 1).Char != 'n' {
 		t.Fatal("English label not above new caret")
 	}
 	out.Reset()
@@ -52,7 +52,7 @@ func TestLanguageBadgeUsesMixedTextVisualCaret(t *testing.T) {
 	screen := vt10x.New(vt10x.WithSize(30, 4))
 	_, _ = screen.Write(out.Bytes())
 	cur := screen.Cursor()
-	if screen.Cell(min(cur.X, 28), cur.Y-1).Char != 'ʰ' {
+	if screen.Cell(min(cur.X, 28), cur.Y-1).Char != 'h' {
 		t.Fatal("badge does not follow mapped visual caret")
 	}
 	if cur.X == 8 {
@@ -75,7 +75,7 @@ func TestLanguageBadgeHiddenAtUnsafePositions(t *testing.T) {
 			e := New(&out, tc.cols, 4)
 			e.SetLanguage(tc.language)
 			_, _ = e.Write([]byte(tc.input))
-			if strings.ContainsAny(out.String(), "ʰᵉⁿ") {
+			if strings.Contains(out.String(), "\x1b[0;2m") {
 				t.Fatal("unsafe label rendered")
 			}
 		})
@@ -84,7 +84,7 @@ func TestLanguageBadgeHiddenAtUnsafePositions(t *testing.T) {
 	e := NewInline(&out, 20, 4, 2)
 	e.SetLanguage("he")
 	_, _ = e.Write([]byte("prompt"))
-	if strings.Contains(out.String(), "ʰᵉ") {
+	if strings.Contains(out.String(), "\x1b[0;2mhe\x1b[0m") {
 		t.Fatal("label overwrote unknown shell row")
 	}
 }
@@ -112,7 +112,7 @@ func TestLanguageBadgeDoesNotEnterScrollbackOrCopyObserver(t *testing.T) {
 	out.Reset()
 	_, _ = e.Write([]byte("\r\nnext\r\nlast"))
 	_, _ = screen.Write(out.Bytes())
-	if strings.ContainsAny(scrolled.String()+observed.String(), "ʰᵉⁿ") {
+	if strings.Contains(scrolled.String()+observed.String(), "he") {
 		t.Fatal("display label leaked into scrollback or copy observer")
 	}
 	if !strings.Contains(scrolled.String(), "original") {
@@ -140,7 +140,7 @@ func TestLanguageResizeDoesNotRestoreStaleRow(t *testing.T) {
 		t.Fatal("cleanup used stale coordinates")
 	}
 	_, _ = e.Write([]byte("\x1b[2J\x1b[Hfresh\r\nprompt"))
-	if !strings.Contains(out.String(), "ᵉⁿ") {
+	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
 		t.Fatal("label did not return after child repaint")
 	}
 }

@@ -176,14 +176,14 @@ func TestLTRRowNotAligned(t *testing.T) {
 }
 
 // The cursor has to follow the line it sits on: after a right-aligned RTL row
-// it lands at the left edge of the word, after its final logical character.
+// it lands on the empty cell left of the word, where the next character goes.
 func TestRTLCursorFollowsAlignment(t *testing.T) {
 	var buf bytes.Buffer
 	e := NewInline(&buf, 20, 2, 0)
 	if _, err := e.Write([]byte("שלום")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "\x1b[1;17H") {
+	if !strings.Contains(buf.String(), "\x1b[1;16H") {
 		t.Errorf("cursor not moved to the aligned row end\ngot %q", buf.String())
 	}
 }
@@ -195,13 +195,13 @@ func TestHebrewInsertionCaret(t *testing.T) {
 		name, input string
 		want        int
 	}{
-		{"one letter", "ש", 19},
-		{"word", "שלום", 16},
-		{"space", "שלום ", 15},
-		{"second word", "שלום ע", 14},
-		{"inside word", "שלום\x1b[D", 17},
+		{"one letter", "ש", 18},
+		{"word", "שלום", 15},
+		{"space", "שלום ", 14},
+		{"second word", "שלום ע", 13},
+		{"inside word", "שלום\x1b[D", 16},
 		{"word start", "שלום\r", 19},
-		{"LTR prompt", "a> שלום", 3},
+		{"LTR prompt", "a> שלום", 2},
 		{"LTR control", "> hello", 7},
 		{"digits", "a> שלום 12", 5},
 	} {
@@ -231,7 +231,7 @@ func TestHebrewCaretEveryKeystroke(t *testing.T) {
 				if _, err := e.Write([]byte(string(r))); err != nil {
 					t.Fatal(err)
 				}
-				want := fmt.Sprintf("\x1b[1;%dH\x1b[?25h", 30-i)
+				want := fmt.Sprintf("\x1b[1;%dH\x1b[?25h", 29-i)
 				if !strings.HasSuffix(out.String(), want) {
 					t.Fatalf("key %d: want %q, got %q", i, want, out.String())
 				}
@@ -256,7 +256,7 @@ func TestBrailleAnimationKeepsHebrewCaret(t *testing.T) {
 	if _, err := e.Write([]byte("› שלום")); err != nil {
 		t.Fatal(err)
 	}
-	const want = "\x1b[1;25H\x1b[?25h"
+	const want = "\x1b[1;24H\x1b[?25h"
 	if !strings.HasSuffix(out.String(), want) {
 		t.Fatalf("baseline caret want %q, got %q", want, out.String())
 	}

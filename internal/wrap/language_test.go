@@ -13,14 +13,14 @@ func TestLanguageSwitchWhileIdleAndScreenCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = d.Write([]byte("header\r\nprompt"))
-	if !strings.Contains(out.String(), "ʰᵉ") {
+	if !strings.Contains(out.String(), "\x1b[0;2mhe\x1b[0m") {
 		t.Fatal("main label missing")
 	}
 	out.Reset()
 	if err := d.setLanguage("en"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "ᵉⁿ") {
+	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
 		t.Fatal("idle language switch not painted")
 	}
 	out.Reset()
@@ -29,19 +29,19 @@ func TestLanguageSwitchWhileIdleAndScreenCleanup(t *testing.T) {
 	if switchAt < 0 || !strings.Contains(out.String()[:switchAt], "header") {
 		t.Fatal("main label not cleared before alt switch")
 	}
-	if !strings.Contains(out.String()[switchAt:], "ᵉⁿ") {
+	if !strings.Contains(out.String()[switchAt:], "\x1b[0;2men\x1b[0m") {
 		t.Fatal("alt language not inherited")
 	}
 	out.Reset()
 	_, _ = d.Write([]byte("\x1b[?1049l"))
-	if !strings.Contains(out.String(), "ᵉⁿ") {
+	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
 		t.Fatal("main label not restored")
 	}
 	out.Reset()
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "header") || strings.ContainsAny(out.String(), "ʰᵉⁿ") {
+	if !strings.Contains(out.String(), "header") || strings.Contains(out.String(), "\x1b[0;2m") {
 		t.Fatal("exit did not remove label")
 	}
 }
@@ -52,7 +52,7 @@ func TestLanguageDoesNotChangePipeOutput(t *testing.T) {
 	_ = d.setLanguage("he")
 	_, _ = d.Write([]byte("hello\n"))
 	_ = d.Close()
-	if strings.ContainsAny(out.String(), "ʰᵉⁿ") {
+	if strings.Contains(out.String(), "\x1b[0;2m") {
 		t.Fatal("language label in pipe output")
 	}
 }

@@ -66,8 +66,10 @@ func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bo
 }
 
 // ShapeRunesLayout also maps logical insertion boundaries to visual columns.
-// At a direction boundary, the caret follows the preceding logical character,
-// keeping the typing position on the trailing edge of the character just typed.
+// A boundary maps to the cell after the preceding logical character in that
+// character's direction: left of an RTL character, right of an LTR one. That is
+// the cell where the next typed character is drawn, so a block cursor sits on
+// empty space instead of covering the character just typed.
 func ShapeRunesLayout(logical []rune) (visual []rune, visualToLogical []int, rtl bool, carets []int) {
 	if len(logical) == 0 {
 		return nil, nil, false, []int{0}
@@ -92,9 +94,9 @@ func ShapeRunesLayout(logical []rune) (visual []rune, visualToLogical []int, rtl
 	carets = make([]int, len(logical)+1)
 	for x, li := range vis.VisualToLogical {
 		if vis.EmbeddingLevels[li]%2 == 1 {
-			carets[li+1] = x
+			carets[li+1] = x - 1
 			if li == 0 {
-				carets[0] = x + 1
+				carets[0] = x
 			}
 		} else {
 			carets[li+1] = x + 1

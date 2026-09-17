@@ -128,7 +128,7 @@ not include this feature.
 
 ### Input-language label on macOS
 
-Local builds with cgo enabled show a compact `ʰᵉ` (Hebrew) or `ᵉⁿ` (English)
+Local builds with cgo enabled show a compact `he` (Hebrew) or `en` (English)
 on the terminal row above the blinking text caret. The label follows the
 visually reordered caret and checks a refreshed keyboard-language snapshot every
 150 ms, including while the child is idle. Restart the wrapped program after
@@ -142,8 +142,9 @@ When validating this integration, switch English/Hebrew/English while one wrappe
 process stays running and idle; checking only its startup label misses stale
 input-source state.
 
-The label uses superscript characters in two terminal cells; terminal output
-cannot set a floating label's font size. It temporarily covers those cells and
+The label uses baseline lowercase characters in two terminal cells to keep it
+close to the caret below. Terminal output cannot set a floating label's font size
+or position text between rows. It temporarily covers those cells and
 restores the underlying row when it moves or disappears. It hides for other
 languages, hidden cursors, the top screen row, and pre-existing shell rows whose
 contents rtlwrap cannot restore. It is removed before scrolling, screen changes,
