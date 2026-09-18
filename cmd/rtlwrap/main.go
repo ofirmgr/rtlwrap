@@ -15,21 +15,30 @@ var version = "dev"
 func main() {
 	args := os.Args[1:]
 	options := wrap.Options{}
-	if len(args) > 0 {
+	for len(args) > 0 {
+		consumed := true
 		switch args[0] {
 		case "--restore-copy":
 			options.RestoreCopy = true
-			args = args[1:]
 		case "--no-restore-copy":
 			options.DisableCopy = true
-			args = args[1:]
+		case "--swap-arrows", "--swap-hebrew-arrows":
+			options.SwapArrows = true
+		case "--no-swap-arrows", "--no-swap-hebrew-arrows":
+			options.DisableSwapArrows = true
+		default:
+			consumed = false
 		}
+		if !consumed {
+			break
+		}
+		args = args[1:]
 	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rtlwrap [--no-restore-copy] [--] <command> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: rtlwrap [--no-restore-copy] [--no-swap-arrows] [--swap-arrows] [--] <command> [args...]")
 		os.Exit(2)
 	}
 	if args[0] == "--version" || args[0] == "-v" {

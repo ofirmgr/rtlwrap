@@ -25,11 +25,14 @@ func Run(argv []string) error {
 	return RunWithOptions(argv, Options{})
 }
 
-// Options controls integration with the host system clipboard. The zero value
-// enables restoration automatically on macOS terminals when available.
+// Options controls integration with the host system clipboard and input handling.
+// The zero value enables restoration and Hebrew arrow navigation automatically on
+// macOS terminals when available.
 type Options struct {
-	RestoreCopy bool // Require restoration instead of falling back if unavailable.
-	DisableCopy bool
+	RestoreCopy       bool // Require restoration instead of falling back if unavailable.
+	DisableCopy       bool
+	SwapArrows        bool // Force swapping Left/Right arrows unconditionally.
+	DisableSwapArrows bool // Disable swapping Left/Right arrows when Hebrew keyboard is active.
 }
 
 // RunWithOptions runs a child with optional original-text copy restoration.
@@ -140,13 +143,15 @@ func RunWithOptions(argv []string, options Options) error {
 	}()
 	defer signal.Stop(ch)
 
-	// Keystrokes are sent as-is (the child expects logical order); only the
-	// child's output is shaped.
+	// Keystrokes are forwarded to the child PTY, swapping Left and Right arrow
+	// keys when Hebrew input is active to preserve visual arrow navigation.
 	go func() {
+		shouldSwap := makeShouldSwap(options)
 		if len(typed) > 0 {
-			_, _ = ptmx.Write(typed)
+			out := transformInput(typed, shouldSwap())
+			_, _ = ptmx.Write(out)
 		}
-		_, _ = io.Copy(ptmx, os.Stdin)
+		_ = forwardInput(ptmx, os.Stdin, shouldSwap, 25*time.Millisecond)
 	}()
 
 	_, _ = io.Copy(d, ptmx) // returns when the child closes the PTY

@@ -156,6 +156,19 @@ After a terminal resize, a reflowed label can remain until the child repaints.
 rtlwrap discards its old label coordinates to avoid restoring text into the
 wrong row of the resized terminal.
 
+### Hebrew arrow-key navigation on macOS
+
+When typing Hebrew into terminal applications (such as Claude Code, Codex CLI,
+Antigravity, or Cline), physical Left Arrow and Right Arrow keys normally behave
+inverted because terminal line editors navigate logical buffer indices rather than
+visual screen columns.
+
+Local macOS builds with cgo enabled automatically swap Left and Right arrow keys
+(including word navigation with Option/Alt) whenever the active keyboard layout is
+Hebrew (`he`). When typing in English (`en`), arrow keys remain untouched.
+Use `--no-swap-arrows` (or `RTLWRAP_NO_SWAP_ARROWS=1`) to disable swapping, or
+`--swap-arrows` (or `RTLWRAP_SWAP_ARROWS=1`) to force it unconditionally.
+
 ## How it works
 
 rtlwrap runs the program on a pseudo-terminal and feeds its output into a

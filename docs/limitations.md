@@ -54,6 +54,22 @@ follows the preceding character's resolved bidi direction. Regression coverage i
 per-keystroke Hebrew input, idle repaints, cursor movement, LTR prompts, and digits
 in `internal/termstate/engine_test.go`.
 
+Because terminal line editors (such as GNU Readline, Zsh ZLE, or CLI prompts) process
+arrow keys logically rather than visually, Left Arrow (`\x1b[D`) triggers `backward-char`
+(decrementing the buffer index toward 0) and Right Arrow (`\x1b[C`) triggers `forward-char`
+(incrementing the buffer index). In an RTL run, index 0 is on the right and index N is
+on the left, so untransformed logical backward moves the visual cursor right and logical
+forward moves the visual cursor left.
+
+On local macOS builds with cgo enabled, rtlwrap automatically swaps Left and Right arrow
+keys (including Option/Alt word jumps) whenever the active keyboard input language is
+Hebrew (`he`), preserving intuitive visual arrow navigation for Hebrew prompt typing in
+agent CLIs and shells. When in English (`en`), arrow keys remain untouched. Use
+`--no-swap-arrows` (or `RTLWRAP_NO_SWAP_ARROWS=1`) to disable this, or `--swap-arrows`
+to force swapping unconditionally. In mixed lines or full-screen TUI apps on non-macOS
+builds without input language detection, manual flags or line editor settings may be
+required.
+
 Braille patterns (U+2800–U+28FF) are resolved as neutral graphics when choosing
 row direction and bidi runs, and are then emitted unchanged. Terminal programs
 use them for spinners, charts, and animations; Codex animates dots in blank

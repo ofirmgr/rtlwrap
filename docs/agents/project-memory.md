@@ -36,6 +36,14 @@ document here.
   host-terminal behavior. Verified from source on 2026-09-17; no live selection
   reproduction was established by this source check.
 
+- Keyboard arrow navigation: `internal/wrap/input.go` streams stdin via `forwardInput()`.
+  On macOS with cgo, when `inputlang.Current() == "he"`, Left and Right arrow keys
+  (standard CSI, SS3, modified CSI, and word navigation `\x1bb`/`\x1bf`) are automatically
+  swapped to preserve visual arrow navigation in agent CLIs and shells. Can be disabled
+  via `--no-swap-arrows` / `RTLWRAP_NO_SWAP_ARROWS=1` or forced via `--swap-arrows` /
+  `RTLWRAP_SWAP_ARROWS=1`. Verified from source and tests on 2026-09-18.
+
+
 - In a macOS sandbox where the default Go build cache is blocked (`operation not permitted`), use
   `GOCACHE=/private/tmp/rtlwrap-go-cache go test -race ./...` instead of the plain test command.
   Per Codex memory 2026-09-02/2026-09-13 (not present in README/AGENTS.md).
