@@ -13,6 +13,11 @@ type csiEscape struct {
 	args []int
 	mode byte
 	priv bool
+	// foreign marks a sequence outside vt10x's vocabulary: a '<', '=' or '>'
+	// parameter prefix (kitty keyboard, XTMODKEYS, secondary DA) or an
+	// intermediate byte (DECSCUSR, DECRQM, DECCARA). Its final byte would
+	// otherwise be misread as a plain CSI command, e.g. "CSI > 5 u" as DECRC.
+	foreign bool
 }
 
 func (c *csiEscape) reset() {
@@ -20,6 +25,7 @@ func (c *csiEscape) reset() {
 	c.args = c.args[:0]
 	c.mode = 0
 	c.priv = false
+	c.foreign = false
 }
 
 func (c *csiEscape) put(b byte) bool {
@@ -38,11 +44,17 @@ func (c *csiEscape) parse() {
 	}
 	s := string(c.buf)
 	c.args = c.args[:0]
-	if s[0] == '?' {
+	switch s[0] {
+	case '?':
 		c.priv = true
 		s = s[1:]
+	case '<', '=', '>':
+		c.foreign = true
 	}
 	s = s[:len(s)-1]
+	if strings.IndexFunc(s, func(r rune) bool { return r >= 0x20 && r <= 0x2F }) >= 0 {
+		c.foreign = true
+	}
 	ss := strings.Split(s, ";")
 	for _, p := range ss {
 		i, err := strconv.Atoi(p)
@@ -68,6 +80,9 @@ func (c *csiEscape) maxarg(i, def int) int {
 
 func (t *State) handleCSI() {
 	c := &t.csi
+	if c.foreign {
+		goto unknown
+	}
 	switch c.mode {
 	default:
 		goto unknown
@@ -162,6 +177,9 @@ func (t *State) handleCSI() {
 	case 'h': // SM - set terminal mode
 		t.setMode(c.priv, true, c.args)
 	case 'm': // SGR - terminal attribute (color)
+		if c.priv {
+			goto unknown
+		}
 		t.setAttr(c.args)
 	case 'n':
 		switch c.arg(0, 0) {
@@ -178,8 +196,14 @@ func (t *State) handleCSI() {
 			t.moveAbsTo(0, 0)
 		}
 	case 's': // DECSC - save cursor position (ANSI.SYS)
+		if c.priv { // XTSAVE
+			goto unknown
+		}
 		t.saveCursor()
 	case 'u': // DECRC - restore cursor position (ANSI.SYS)
+		if c.priv { // kitty keyboard flags query
+			goto unknown
+		}
 		t.restoreCursor()
 	}
 	return

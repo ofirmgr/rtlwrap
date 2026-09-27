@@ -26,6 +26,10 @@ document here.
   `os.Getenv("TERM_PROGRAM") == "WarpTerminal"`: it clears FriBidi's `ShapeMirroring` flag before
   calling `fribidi.Shape(...)` so Warp's own punctuation-mirroring renderer isn't double-mirrored.
   Verified against source (shape.go:89, 143), per Codex memory 2026-09-10.
+- `internal/vt10x` is a vendored fork; every local change is listed in `internal/vt10x/FORK.md`.
+  Its CSI parser ignores sequences with `<`/`=`/`>` prefixes or intermediate bytes, because Claude
+  Code's kitty-keyboard sequences (`CSI > 5 u`, `CSI < u`, `CSI ? u`) were otherwise run as DECRC
+  and moved the virtual caret to a stale row. Verified by replaying captured Claude output, 2026-09-23.
 
 ## Operational constraints
 

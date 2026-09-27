@@ -14,5 +14,10 @@ Local changes:
   region's top edge (`newline`, `IND`, `CSI S`). Line deletion (`DL`) and
   scrolls inside a region below row 0 still call `scrollUp` directly, so they
   do not report — a real terminal does not put those lines in scrollback either.
+- `csiEscape.foreign`: CSI sequences with a `<`, `=` or `>` parameter prefix
+  or an intermediate byte are ignored instead of being run as the plain command
+  with the same final byte, and `CSI ? s` / `CSI ? u` / `CSI ? m` are ignored
+  too. Upstream ran Claude Code's kitty keyboard sequences (`CSI > 5 u`,
+  `CSI < u`, `CSI ? u`) as DECRC, moving the cursor to a stale saved row.
 
 Nothing else is modified.
