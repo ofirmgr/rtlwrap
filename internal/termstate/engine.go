@@ -33,6 +33,7 @@ type Engine struct {
 	scrolled     [][]vt10x.Glyph // rows pushed off the top since the last render, oldest first
 	rowObserver  func(logical, visual []rune, visualToLogical []int)
 	language     string
+	forceRTL     bool
 	badgeRow     int // one-based; zero means no label is on screen
 	badgeLine    string
 	owned        []bool // rows whose contents are known, excluding pre-existing shell output
@@ -44,6 +45,10 @@ func (e *Engine) SetSynchronizedOutput(enabled bool) { e.synchronized = enabled 
 
 // SetLanguage selects the display-only input label. Render with Write(nil).
 func (e *Engine) SetLanguage(language string) { e.language = language }
+
+// SetRTL selects RTL paragraph direction for rows containing RTL text.
+// Call before Write.
+func (e *Engine) SetRTL(enabled bool) { e.forceRTL = enabled }
 
 func (e *Engine) eraseBadge(buf *bytes.Buffer) {
 	if e.badgeRow == 0 {
@@ -313,7 +318,7 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols, minUsed int) (string, []
 		}
 	}
 
-	vis, v2l, rtl, carets := shape.ShapeRunesLayout(logical[:used])
+	vis, v2l, rtl, carets := shape.ShapeRunesLayoutWithRTL(logical[:used], e.forceRTL)
 	if e.rowObserver != nil {
 		e.rowObserver(logical[:used], vis, v2l)
 	}

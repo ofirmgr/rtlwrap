@@ -25,10 +25,11 @@ func Run(argv []string) error {
 	return RunWithOptions(argv, Options{})
 }
 
-// Options controls integration with the host system clipboard and input handling.
-// The zero value enables restoration and Hebrew arrow navigation automatically on
-// macOS terminals when available.
+// Options controls rendering and integration with host clipboard and input handling.
+// The zero value uses RTL direction for rows containing RTL text and enables
+// restoration and Hebrew arrow navigation on macOS terminals when available.
 type Options struct {
+	AutoDirection     bool // Use the first strong character instead of the default RTL override.
 	RestoreCopy       bool // Require restoration instead of falling back if unavailable.
 	DisableCopy       bool
 	SwapArrows        bool // Force swapping Left/Right arrows unconditionally.
@@ -102,6 +103,7 @@ func RunWithOptions(argv []string, options Options) error {
 	} else {
 		d = newDispatcher(os.Stdout, cols, rows)
 	}
+	d.setRTL(!options.AutoDirection)
 	if copies != nil {
 		d.observeRows(copies.Add)
 	}

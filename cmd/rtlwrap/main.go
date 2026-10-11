@@ -18,6 +18,10 @@ func main() {
 	for len(args) > 0 {
 		consumed := true
 		switch args[0] {
+		case "--rtl":
+			options.AutoDirection = false
+		case "--auto-direction":
+			options.AutoDirection = true
 		case "--restore-copy":
 			options.RestoreCopy = true
 		case "--no-restore-copy":
@@ -38,7 +42,7 @@ func main() {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rtlwrap [--no-restore-copy] [--no-swap-arrows] [--swap-arrows] [--] <command> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: rtlwrap [--rtl | --auto-direction] [--no-restore-copy] [--no-swap-arrows] [--swap-arrows] [--] <command> [args...]")
 		os.Exit(2)
 	}
 	if args[0] == "--version" || args[0] == "-v" {

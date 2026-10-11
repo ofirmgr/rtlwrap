@@ -21,9 +21,10 @@ import (
 // for the next read or Close — acceptable for Phase 2 (scrolling text), fixed
 // properly by Phase 3 termstate.
 type pipe struct {
-	tk   parser.Tokenizer
-	text []byte // accumulated TEXT awaiting a boundary
-	w    io.Writer
+	tk       parser.Tokenizer
+	text     []byte // accumulated TEXT awaiting a boundary
+	w        io.Writer
+	forceRTL bool
 }
 
 func newPipe(w io.Writer) *pipe { return &pipe{w: w} }
@@ -41,7 +42,7 @@ func (p *pipe) Write(chunk []byte) (int, error) {
 			return 0, err
 		}
 	}
-	if !hasRTL(p.text) { // safe to emit LTR incrementally
+	if !p.forceRTL && !hasRTL(p.text) { // forced direction needs the complete line
 		if err := p.flushText(); err != nil {
 			return 0, err
 		}
@@ -71,7 +72,7 @@ func (p *pipe) flushText() error {
 	if len(p.text) == 0 {
 		return nil
 	}
-	_, err := io.WriteString(p.w, shape.Shape(string(p.text)))
+	_, err := io.WriteString(p.w, shape.ShapeWithRTL(string(p.text), p.forceRTL))
 	p.text = p.text[:0]
 	return err
 }

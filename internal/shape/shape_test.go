@@ -24,6 +24,26 @@ var golden = []struct {
 	{"emoji and zwnj", "می‌روم 👍", "👍 ﻡﻭﺭ‌ﯽﻣ"},
 }
 
+func TestExplicitRTLForEnglishPrefixedHebrew(t *testing.T) {
+	logical := "Option A: הוסף monitorContextHash כדי למנוע טעות"
+	want := "תועט עונמל ידכ monitorContextHash ףסוה :Option A"
+	if got := ShapeWithRTL(logical, true); got != want {
+		t.Fatalf("forced RTL: got %q, want %q", got, want)
+	}
+	if Shape(logical) == want {
+		t.Fatal("automatic mode unexpectedly uses RTL for English prefix")
+	}
+	for _, logical := range []string{"Option A: monitorContextHash = hash", "func main() { return }"} {
+		if got := ShapeWithRTL(logical, true); got != logical {
+			t.Errorf("English row changed: %q", got)
+		}
+	}
+	_, mapping, rtl, carets := ShapeRunesLayoutWithRTL([]rune("Option A: שלום"), true)
+	if !rtl || len(mapping) != len([]rune("Option A: שלום")) || len(carets) != len(mapping)+1 {
+		t.Fatalf("RTL mapping invalid: rtl=%v mapping=%v carets=%v", rtl, mapping, carets)
+	}
+}
+
 func TestShapeGolden(t *testing.T) {
 	for _, c := range golden {
 		if got := Shape(c.in); got != c.want {

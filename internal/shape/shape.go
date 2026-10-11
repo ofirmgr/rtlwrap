@@ -14,21 +14,27 @@ import (
 // fribidi's one-shot transform assumes a single line, so we split on '\n'
 // and shape each line independently.
 func Shape(s string) string {
+	return ShapeWithRTL(s, false)
+}
+
+// ShapeWithRTL forces an RTL base direction for lines containing RTL text.
+// Lines without RTL characters retain their automatic direction.
+func ShapeWithRTL(s string, forceRTL bool) string {
 	if s == "" {
 		return s
 	}
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
-		lines[i] = shapeLine(line)
+		lines[i] = shapeLine(line, forceRTL)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func shapeLine(line string) string {
+func shapeLine(line string, forceRTL bool) string {
 	if line == "" {
 		return line
 	}
-	vis, _ := ShapeRunes([]rune(line))
+	vis, _, _, _ := ShapeRunesLayoutWithRTL([]rune(line), forceRTL)
 	// fribidi inserts zero-width U+FEFF fillers where a lam-alef ligature
 	// absorbed a character. They add a visible cell gap in some terminals and
 	// carry no meaning for display, so strip them here (Shape doesn't need the
@@ -71,10 +77,25 @@ func ShapeRunesDir(logical []rune) (visual []rune, visualToLogical []int, rtl bo
 // the cell where the next typed character is drawn, so a block cursor sits on
 // empty space instead of covering the character just typed.
 func ShapeRunesLayout(logical []rune) (visual []rune, visualToLogical []int, rtl bool, carets []int) {
+	return ShapeRunesLayoutWithRTL(logical, false)
+}
+
+// ShapeRunesLayoutWithRTL applies an explicit RTL base to mixed-language rows,
+// preserving the visual mapping used for colors, copying, and caret placement.
+func ShapeRunesLayoutWithRTL(logical []rune, forceRTL bool) (visual []rune, visualToLogical []int, rtl bool, carets []int) {
 	if len(logical) == 0 {
 		return nil, nil, false, []int{0}
 	}
 	base := fribidi.ParType(fribidi.ON) // auto-detect base direction
+	if forceRTL {
+		for _, r := range logical {
+			t := fribidi.GetBidiType(r)
+			if t == fribidi.RTL || t == fribidi.AL {
+				base = fribidi.ParType(fribidi.RTL)
+				break
+			}
+		}
+	}
 	vis, _ := fribidi.LogicalToVisual(fribidi.DefaultFlags, neutralizeBraille(logical), &base)
 	for x, li := range vis.VisualToLogical {
 		if isBraille(logical[li]) {

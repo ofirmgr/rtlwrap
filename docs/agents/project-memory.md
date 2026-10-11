@@ -33,6 +33,16 @@ document here.
 
 ## Operational constraints
 
+- RTL base direction is the default for rows with strong RTL characters;
+  English-only rows retain automatic direction. `--auto-direction` opts out;
+  `--rtl` restores the default, with the last direction flag winning.
+  Wiring: `!wrap.Options.AutoDirection` ->
+  dispatcher -> normal/alternate engines and non-TTY pipe ->
+  `shape.ShapeRunesLayoutWithRTL`. The option must be set before output starts.
+  Physical rows remain independent; no paragraph reconstruction across soft wraps.
+  Verified by mixed English-prefix/Hebrew regression tests across all three
+  renderers on 2026-10-11.
+
 - Mouse-reporting modes pass through `internal/wrap/dispatch.go`, while
   `internal/wrap/wrap.go` forwards stdin directly to the child PTY. Mouse coordinates
   are not mapped back from rendered RTL cells to logical cells. This can affect

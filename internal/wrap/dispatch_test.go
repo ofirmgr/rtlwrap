@@ -11,6 +11,34 @@ import (
 	"github.com/Har2yQn78/rtlwrap/internal/shape"
 )
 
+func TestExplicitRTLAcrossRenderers(t *testing.T) {
+	for _, mode := range []string{"inline", "alternate", "pipe"} {
+		t.Run(mode, func(t *testing.T) {
+			var out bytes.Buffer
+			d := newInlineDispatcher(&out, 80, 4, 0)
+			if mode == "pipe" {
+				d = newDispatcher(&out, 80, 4)
+			}
+			d.setRTL(true)
+			if mode == "alternate" {
+				_, _ = d.Write([]byte("\x1b[?1049h"))
+			}
+			// The English prefix arrives before the Hebrew, as in streamed output.
+			for _, s := range []string{"Option A: ", "הוסף monitorContextHash כדי למנוע טעות", "\r\n"} {
+				if _, err := d.Write([]byte(s)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := d.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "תועט עונמל ידכ monitorContextHash ףסוה :Option A") {
+				t.Fatalf("mixed-language order: %q", out.String())
+			}
+		})
+	}
+}
+
 // Every completed frame must restore the application-requested visibility in
 // the same write, even when output never pauses long enough for a timer.
 func TestDispatchCursorVisibleDuringContinuousOutput(t *testing.T) {

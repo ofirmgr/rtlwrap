@@ -100,6 +100,24 @@ Or, if you built the binary locally and did not put it on your `PATH`:
 Everything the program prints is reshaped; everything you type is sent through
 untouched.
 
+### Hebrew or Arabic prose with English headings
+
+Rows containing Hebrew or Arabic text use RTL paragraph direction by default,
+including sentences beginning with an English prefix such as `Option A:`. Use:
+
+```sh
+rtlwrap claude
+rtlwrap codex
+```
+
+English identifiers retain their internal order, colors and caret mappings follow
+the reordered text, and English-only rows keep automatic direction. Use
+`--auto-direction` to choose each row's direction from its first strong character
+instead. `--rtl` explicitly selects the default behavior; the last direction flag
+wins. Restart the wrapped program to change modes.
+This is a row-level override, not a Markdown prose detector: mixed-language code
+and UI rows also receive the override. See [rendering limits](docs/limitations.md#redraw-heavy--interactive-apps).
+
 ### Copy original Hebrew text on macOS
 
 Terminal selection normally copies rtlwrap's visual character order, which

@@ -22,6 +22,7 @@ type dispatcher struct {
 	buf          []byte // bytes accrued for the current consumer within one Write
 	rowObserver  func([]rune, []rune, []int)
 	language     string
+	forceRTL     bool
 	synchronized bool
 	syncTimer    *time.Timer
 	syncEpoch    uint64
@@ -114,6 +115,15 @@ func (d *dispatcher) observeRows(observer func([]rune, []rune, []int)) {
 	d.rowObserver = observer
 	if d.main != nil {
 		d.main.SetRowObserver(observer)
+	}
+}
+
+// setRTL configures all renderers before child output is consumed.
+func (d *dispatcher) setRTL(enabled bool) {
+	d.forceRTL = enabled
+	d.pipe.forceRTL = enabled
+	if d.main != nil {
+		d.main.SetRTL(enabled)
 	}
 }
 
@@ -263,6 +273,7 @@ func (d *dispatcher) setAlt(enter bool) error {
 		// Fresh engine per alt session: the real terminal just cleared to its
 		// alt buffer, so the grid starts blank and matches.
 		d.engine = termstate.New(d.out, d.cols, d.rows)
+		d.engine.SetRTL(d.forceRTL)
 		d.engine.SetSynchronizedOutput(d.synchronized)
 		d.engine.SetRowObserver(d.rowObserver)
 		d.engine.SetLanguage(d.language)

@@ -43,6 +43,17 @@ full-width TUI box, for instance — has no room to shift and stays put, so text
 inside such a box is still left-aligned within it. The non-TTY fallback does
 not align at all.
 
+The default RTL mode overrides automatic direction on rows containing strong RTL characters,
+so English headings such as `Option A:` do not make Hebrew prose LTR. English-only
+rows remain automatic. `--auto-direction` restores first-strong-character direction
+detection; `--rtl` explicitly selects the default. The override applies to mixed-language UI and code rows
+too; rtlwrap cannot identify prose from the terminal grid. Each physical row is
+still resolved independently: soft-wrapped paragraphs are not reconstructed,
+and an English-only continuation does not inherit RTL direction. In the non-TTY
+fallback, the option buffers plain text until a control/ANSI boundary or EOF;
+ANSI boundaries still split shaping, so colored mixed-language sentences may
+require terminal output for correct ordering.
+
 Caret columns represent insertion boundaries, with affinity to the preceding
 logical character: the cursor sits on the cell where the next character is drawn,
 left of a preceding RTL character and right of a preceding LTR one. Hebrew typing
