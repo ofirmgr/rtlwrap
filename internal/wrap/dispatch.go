@@ -100,6 +100,19 @@ func (d *dispatcher) setLanguage(language string) error {
 	return nil
 }
 
+// caret reports the active grid's rendered caret; nil without a grid.
+func (d *dispatcher) caret() *termstate.Caret {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.alt {
+		return d.engine.Caret()
+	}
+	if d.main != nil {
+		return d.main.Caret()
+	}
+	return nil
+}
+
 func (d *dispatcher) clearLanguageBadge() error {
 	if d.alt {
 		return d.engine.ClearLanguageBadge()

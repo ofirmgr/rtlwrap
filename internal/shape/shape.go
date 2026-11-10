@@ -114,17 +114,13 @@ func ShapeRunesLayoutWithRTL(logical []rune, forceRTL bool) (visual []rune, visu
 	}
 	carets = make([]int, len(logical)+1)
 	for x, li := range vis.VisualToLogical {
-		if vis.EmbeddingLevels[li]%2 == 1 {
-			carets[li+1] = x - 1
-			if li == 0 {
-				carets[0] = x
-			}
-		} else {
-			carets[li+1] = x + 1
-			if li == 0 {
-				carets[0] = x
-			}
-		}
+		carets[li] = x
+	}
+	last := len(logical) - 1
+	if vis.EmbeddingLevels[last]%2 == 1 {
+		carets[len(logical)] = carets[last] - 1
+	} else {
+		carets[len(logical)] = carets[last] + 1
 	}
 	return vis.Str, vis.VisualToLogical, base.IsRtl(), carets
 }

@@ -50,12 +50,28 @@ document here.
   host-terminal behavior. Verified from source on 2026-09-17; no live selection
   reproduction was established by this source check.
 
-- Keyboard arrow navigation: `internal/wrap/input.go` streams stdin via `forwardInput()`.
-  On macOS with cgo, when `inputlang.Current() == "he"`, Left and Right arrow keys
-  (standard CSI, SS3, modified CSI, and word navigation `\x1bb`/`\x1bf`) are automatically
-  swapped to preserve visual arrow navigation in agent CLIs and shells. Can be disabled
-  via `--no-swap-arrows` / `RTLWRAP_NO_SWAP_ARROWS=1` or forced via `--swap-arrows` /
-  `RTLWRAP_SWAP_ARROWS=1`. Verified from source and tests on 2026-09-18.
+- Keyboard arrow navigation: `internal/wrap/input.go` streams stdin via `forwardInput()`
+  through `makeTranslator`. Plain `\x1b[D`/`\x1b[C`/`\x1bOD`/`\x1bOC` become N logical
+  arrows via `termstate.Caret.Step` (`internal/termstate/caret.go`): the move to
+  the visually nearest boundary on the caret row. `Engine.Caret()` is an atomic
+  snapshot set in `render()` (nil when the cursor is hidden); `dispatcher.caret()`
+  picks the active grid. An unchanged snapshot pointer means no render since the
+  last keys, so the translator continues from its predicted X (key repeat).
+  Modified arrows and `\x1bb`/`\x1bf` swap when `Caret.Direction() < 0`; nil caret
+  falls back to `inputlang.Current() == "he"`. Swapping alone (by layout or by row
+  direction) cannot fix mixed Hebrew/English lines: a logical step across a run
+  boundary jumps visually. Caret maps must not carry an identity tail past the
+  used text, or the end of RTL text reads as LTR. In `internal/shape/shape.go`,
+  `carets[li] = x` directly maps each character's logical column to its visual
+  position, and the final boundary sits at `carets[last] ± 1` by embedding level,
+  so run boundaries never skip cells. Claude Code 2.1.303 shows the real cursor
+  at the logical insertion point. At visual boundaries (where `Step(dx)` has nowhere
+  further to step), physical arrows are suppressed to avoid passing logical moves
+  that jump across the line in mixed text. `--swap-arrows` / `RTLWRAP_SWAP_ARROWS=1` swaps
+  unconditionally; `--no-swap-arrows` / `RTLWRAP_NO_SWAP_ARROWS=1` passes keys
+  unchanged. Verified by `TestArrowNavigationVisualDirection` and by driving
+  `rtlwrap claude` in a pty (monotonic contiguous caret across "❯ שלום hello עולם",
+  cleanly stopping at both edges without jumping) on 2026-10-19.
 
 
 - In a macOS sandbox where the default Go build cache is blocked (`operation not permitted`), use

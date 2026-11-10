@@ -72,14 +72,21 @@ arrow keys logically rather than visually, Left Arrow (`\x1b[D`) triggers `backw
 on the left, so untransformed logical backward moves the visual cursor right and logical
 forward moves the visual cursor left.
 
-On local macOS builds with cgo enabled, rtlwrap automatically swaps Left and Right arrow
-keys (including Option/Alt word jumps) whenever the active keyboard input language is
-Hebrew (`he`), preserving intuitive visual arrow navigation for Hebrew prompt typing in
-agent CLIs and shells. When in English (`en`), arrow keys remain untouched. Use
-`--no-swap-arrows` (or `RTLWRAP_NO_SWAP_ARROWS=1`) to disable this, or `--swap-arrows`
-to force swapping unconditionally. In mixed lines or full-screen TUI apps on non-macOS
-builds without input language detection, manual flags or line editor settings may be
-required.
+While the caret is visible, rtlwrap translates each plain Left/Right Arrow into
+the number of logical moves that reaches the visually nearest caret position in
+that direction on the last rendered frame. This assumes the child moves one
+cell per logical arrow (no wide characters or soft-wrapped input) and that the
+caret it shows is the insertion point. Keys repeated before the child's response renders continue from the predicted position.
+Run boundaries map directly to their glyph's visual column. At visual edges, outward
+arrows are suppressed so child line editors do not jump to disjoint buffer positions.
+Modified arrows and Option/Alt word jumps are only swapped while the caret sits
+in RTL text; rtlwrap cannot infer application-specific word boundaries. When the
+caret is unknown (hidden cursor as in TUIs drawing their own caret, blank row,
+non-TTY output), local macOS builds with cgo fall back to the keyboard language:
+swap while it is Hebrew. rtlwrap cannot distinguish text editing from other
+arrow-controlled TUI actions. Use `--no-swap-arrows` (or
+`RTLWRAP_NO_SWAP_ARROWS=1`) to leave arrows unchanged, or `--swap-arrows` (or
+`RTLWRAP_SWAP_ARROWS=1`) to swap unconditionally on any build.
 
 Braille patterns (U+2800–U+28FF) are resolved as neutral graphics when choosing
 row direction and bidi runs, and are then emitted unchanged. Terminal programs

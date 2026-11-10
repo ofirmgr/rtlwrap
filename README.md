@@ -177,15 +177,21 @@ wrong row of the resized terminal.
 ### Hebrew arrow-key navigation on macOS
 
 When typing Hebrew into terminal applications (such as Claude Code, Codex CLI,
-Antigravity, or Cline), physical Left Arrow and Right Arrow keys normally behave
+Antigravity, or Cline), physical Left Arrow and Right Arrow keys can behave
 inverted because terminal line editors navigate logical buffer indices rather than
 visual screen columns.
 
-Local macOS builds with cgo enabled automatically swap Left and Right arrow keys
-(including word navigation with Option/Alt) whenever the active keyboard layout is
-Hebrew (`he`). When typing in English (`en`), arrow keys remain untouched.
-Use `--no-swap-arrows` (or `RTLWRAP_NO_SWAP_ARROWS=1`) to disable swapping, or
-`--swap-arrows` (or `RTLWRAP_SWAP_ARROWS=1`) to force it unconditionally.
+While the terminal caret is visible, rtlwrap turns each plain Left or Right
+Arrow into the logical moves that reach the visually adjacent caret position on
+the rendered row, so arrows move visually in Hebrew, English, and mixed
+sentences whatever the keyboard layout. Modified arrows and Option/Alt word
+navigation are swapped while the caret sits in RTL text. When the caret is
+unknown (hidden cursor, blank row, non-TTY output), local macOS builds with cgo
+fall back to swapping while the keyboard language is Hebrew (`he`).
+Use `--swap-arrows` (or `RTLWRAP_SWAP_ARROWS=1`) to swap unconditionally instead.
+Use `--no-swap-arrows` (or `RTLWRAP_NO_SWAP_ARROWS=1`) to leave arrows unchanged.
+Non-text TUI controls may react unexpectedly to synthesized arrow counts.
+Restart the wrapped program after rebuilding.
 
 ## How it works
 

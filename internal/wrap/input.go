@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Har2yQn78/rtlwrap/internal/inputlang"
+	"github.com/Har2yQn78/rtlwrap/internal/termstate"
 )
 
 // transformInput swaps Left and Right arrow keys in chunk when swap is true.
@@ -156,22 +156,79 @@ func incompleteEscapeLen(b []byte) int {
 	return 0
 }
 
-func makeShouldSwap(options Options) func() bool {
+// visualArrows rewrites each unmodified Left/Right in b into the logical moves
+// that reach the visually adjacent position of caret c. Other input, and arrows
+// c cannot place, go through transformInput(..., swap). It returns the caret
+// predicted after b, or nil once b holds other input or an unplaced arrow.
+func visualArrows(b []byte, c *termstate.Caret, swap bool) ([]byte, *termstate.Caret) {
+	var out []byte
+	start := 0
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] != 0x1b || (b[i+1] != '[' && b[i+1] != 'O') || (b[i+2] != 'D' && b[i+2] != 'C') {
+			continue
+		}
+		if start < i {
+			out = append(out, transformInput(b[start:i], swap)...)
+			c = nil
+		}
+		dx := -1
+		if b[i+2] == 'C' {
+			dx = 1
+		}
+		if n, ok := c.Step(dx); ok {
+			key, count := byte('C'), n
+			if n < 0 {
+				key, count = 'D', -n
+			}
+			for range count {
+				out = append(out, 0x1b, b[i+1], key)
+			}
+			c = &termstate.Caret{Map: c.Map, X: c.X + n}
+		} else if c == nil {
+			out = append(out, transformInput(b[i:i+3], swap)...)
+		}
+		start = i + 3
+		i += 2
+	}
+	if start < len(b) {
+		out = append(out, transformInput(b[start:], swap)...)
+		c = nil
+	}
+	return out, c
+}
+
+// makeTranslator returns the keystroke rewrite for options. By default plain
+// arrows move to the visually adjacent caret position, and other horizontal
+// keys swap while the caret sits in RTL text; with the caret unknown they swap
+// while currentLanguage is Hebrew. Call the result from one goroutine.
+func makeTranslator(options Options, caret func() *termstate.Caret, currentLanguage func() string) func([]byte) []byte {
 	if options.DisableSwapArrows || os.Getenv("RTLWRAP_NO_SWAP_ARROWS") != "" {
-		return func() bool { return false }
+		return func(b []byte) []byte { return b }
 	}
 	if options.SwapArrows || os.Getenv("RTLWRAP_SWAP_ARROWS") != "" {
-		return func() bool { return true }
+		return func(b []byte) []byte { return transformInput(b, true) }
 	}
-	return func() bool {
-		return inputlang.Current() == "he"
+	// Until the child's response is rendered, later arrows start from where
+	// the previous ones were sent, so key repeat does not reuse a stale caret.
+	var last, predicted *termstate.Caret
+	return func(b []byte) []byte {
+		rendered := caret()
+		c := rendered
+		if rendered != nil && rendered == last {
+			c = predicted
+		}
+		dir := rendered.Direction()
+		swap := dir < 0 || dir == 0 && currentLanguage() == "he"
+		out, next := visualArrows(b, c, swap)
+		last, predicted = rendered, next
+		return out
 	}
 }
 
-// forwardInput streams bytes from src to dst, transforming arrow keys when
-// shouldSwap returns true. An incomplete trailing escape sequence is held
-// for up to escapeTimeout before being flushed as-is.
-func forwardInput(dst io.Writer, src io.Reader, shouldSwap func() bool, escapeTimeout time.Duration) error {
+// forwardInput streams bytes from src to dst through translate. An incomplete
+// trailing escape sequence is held for up to escapeTimeout before being flushed
+// as-is.
+func forwardInput(dst io.Writer, src io.Reader, translate func([]byte) []byte, escapeTimeout time.Duration) error {
 	ch := make(chan []byte, 1)
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
@@ -208,8 +265,7 @@ func forwardInput(dst io.Writer, src io.Reader, shouldSwap func() bool, escapeTi
 		if len(pending) == 0 {
 			return nil
 		}
-		swap := shouldSwap()
-		out := transformInput(pending, swap)
+		out := translate(pending)
 		pending = nil
 		_, err := dst.Write(out)
 		return err
@@ -239,8 +295,7 @@ func forwardInput(dst io.Writer, src io.Reader, shouldSwap func() bool, escapeTi
 			}
 
 			if len(toProcess) > 0 {
-				swap := shouldSwap()
-				out := transformInput(toProcess, swap)
+				out := translate(toProcess)
 				if _, err := dst.Write(out); err != nil {
 					return err
 				}

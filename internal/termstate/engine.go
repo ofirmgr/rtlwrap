@@ -6,6 +6,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/Har2yQn78/rtlwrap/internal/vt10x"
 
@@ -36,9 +37,15 @@ type Engine struct {
 	forceRTL     bool
 	badgeRow     int // one-based; zero means no label is on screen
 	badgeLine    string
-	owned        []bool // rows whose contents are known, excluding pre-existing shell output
-	synchronized bool   // apply child updates without displaying an incomplete frame
+	owned        []bool                // rows whose contents are known, excluding pre-existing shell output
+	synchronized bool                  // apply child updates without displaying an incomplete frame
+	caret        atomic.Pointer[Caret] // last rendered caret, nil when unknown
 }
+
+// Caret returns the last rendered caret, nil when unknown. Each render stores a
+// new value, so an unchanged pointer means nothing was rendered since. Safe to
+// call from any goroutine; the result must not be modified.
+func (e *Engine) Caret() *Caret { return e.caret.Load() }
 
 // SetSynchronizedOutput defers painting until the dispatcher completes the frame.
 func (e *Engine) SetSynchronizedOutput(enabled bool) { e.synchronized = enabled }
@@ -241,6 +248,11 @@ func (e *Engine) render() error {
 		cx = visualX(caretMaps[cur.Y], cur.X, cols) + pads[cur.Y]
 		cx = min(max(cx, 0), cols-1)
 	}
+	var caret *Caret
+	if e.vt.CursorVisible() && cur.Y >= 0 && cur.Y < rows {
+		caret = &Caret{Map: caretMaps[cur.Y], X: cur.X}
+	}
+	e.caret.Store(caret)
 	label := ""
 	switch e.language {
 	case "he":
@@ -322,10 +334,8 @@ func (e *Engine) renderCells(cells []vt10x.Glyph, cols, minUsed int) (string, []
 	if e.rowObserver != nil {
 		e.rowObserver(logical[:used], vis, v2l)
 	}
-	// The dropped tail still needs map entries: the cursor can sit in it.
-	for x := used + 1; x <= cols; x++ {
-		carets = append(carets, x)
-	}
+	// The dropped tail has no map entries: visualX maps it to itself, and an
+	// identity tail would make the end of RTL text look LTR to Caret.
 
 	// Width in cells of what is actually painted: the U+FEFF fillers below
 	// occupy none. ponytail: no wide-rune math (see shape.ShapeRunes), so a

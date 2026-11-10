@@ -3,8 +3,11 @@ package wrap
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Har2yQn78/rtlwrap/internal/termstate"
 )
 
 func TestTransformInput(t *testing.T) {
@@ -77,7 +80,7 @@ func TestForwardInputSwapped(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- forwardInput(&out, r, func() bool { return true }, 20*time.Millisecond)
+		done <- forwardInput(&out, r, swapAll, 20*time.Millisecond)
 	}()
 
 	// Send Left Arrow, Right Arrow, and Hebrew text
@@ -108,7 +111,7 @@ func TestForwardInputStandaloneEscape(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- forwardInput(&out, r, func() bool { return true }, 20*time.Millisecond)
+		done <- forwardInput(&out, r, swapAll, 20*time.Millisecond)
 	}()
 
 	// Send standalone ESC
@@ -137,7 +140,7 @@ func TestForwardInputSplitEscape(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- forwardInput(&out, r, func() bool { return true }, 50*time.Millisecond)
+		done <- forwardInput(&out, r, swapAll, 50*time.Millisecond)
 	}()
 
 	// Send \x1b[ in first write, D in second write immediately
@@ -161,23 +164,132 @@ func TestForwardInputSplitEscape(t *testing.T) {
 	}
 }
 
-func TestMakeShouldSwap(t *testing.T) {
-	// Options take precedence
-	if fn := makeShouldSwap(Options{SwapArrows: true}); !fn() {
-		t.Errorf("expected SwapArrows: true to return true")
-	}
-	if fn := makeShouldSwap(Options{DisableSwapArrows: true, SwapArrows: true}); fn() {
-		t.Errorf("expected DisableSwapArrows: true to take precedence")
+func swapAll(b []byte) []byte { return transformInput(b, true) }
+
+func TestMakeTranslator(t *testing.T) {
+	t.Setenv("RTLWRAP_SWAP_ARROWS", "")
+	t.Setenv("RTLWRAP_NO_SWAP_ARROWS", "")
+	ltr := &termstate.Caret{Map: []int{0, 1, 2}, X: 1}
+	rtl := &termstate.Caret{Map: []int{2, 1, 0}, X: 1}
+	for _, tc := range []struct {
+		name     string
+		options  Options
+		caret    *termstate.Caret
+		language string
+		in, want string
+	}{
+		{"unknown caret, Hebrew layout", Options{}, nil, "he", "\x1b[D", "\x1b[C"},
+		{"unknown caret, English layout", Options{}, nil, "en", "\x1b[D", "\x1b[D"},
+		{"RTL caret ignores layout", Options{}, rtl, "en", "\x1b[D", "\x1b[C"},
+		{"LTR caret ignores layout", Options{}, ltr, "he", "\x1b[D", "\x1b[D"},
+		{"modified arrow swaps by caret", Options{}, rtl, "en", "\x1b[1;3D", "\x1b[1;3C"},
+		{"word jump swaps by caret", Options{}, rtl, "en", "\x1bb", "\x1bf"},
+		{"forced", Options{SwapArrows: true}, ltr, "en", "\x1b[D", "\x1b[C"},
+		{"disabled", Options{DisableSwapArrows: true}, rtl, "he", "\x1b[D", "\x1b[D"},
+		{"disabled wins", Options{DisableSwapArrows: true, SwapArrows: true}, rtl, "he", "\x1b[D", "\x1b[D"},
+		{"other input first", Options{}, rtl, "en", "a\x1b[D", "a\x1b[C"},
+	} {
+		translate := makeTranslator(tc.options, func() *termstate.Caret { return tc.caret }, func() string { return tc.language })
+		if got := string(translate([]byte(tc.in))); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 
-	// Env vars
 	t.Setenv("RTLWRAP_SWAP_ARROWS", "1")
-	if fn := makeShouldSwap(Options{}); !fn() {
-		t.Errorf("expected RTLWRAP_SWAP_ARROWS to return true")
+	if got := string(makeTranslator(Options{}, func() *termstate.Caret { return ltr }, nil)([]byte("\x1b[D"))); got != "\x1b[C" {
+		t.Errorf("RTLWRAP_SWAP_ARROWS: got %q", got)
 	}
 	t.Setenv("RTLWRAP_NO_SWAP_ARROWS", "1")
-	if fn := makeShouldSwap(Options{}); fn() {
-		t.Errorf("expected RTLWRAP_NO_SWAP_ARROWS to take precedence")
+	if got := string(makeTranslator(Options{}, func() *termstate.Caret { return rtl }, nil)([]byte("\x1b[D"))); got != "\x1b[D" {
+		t.Errorf("RTLWRAP_NO_SWAP_ARROWS: got %q", got)
 	}
 }
 
+// Before the child's response renders, a repeated arrow continues from the
+// position the previous one was sent to instead of the stale rendered caret.
+func TestTranslatorPredictsUnrenderedMoves(t *testing.T) {
+	t.Setenv("RTLWRAP_SWAP_ARROWS", "")
+	t.Setenv("RTLWRAP_NO_SWAP_ARROWS", "")
+	// "ab" then an RTL run: boundary visual columns 0 1 4 3 2.
+	caret := &termstate.Caret{Map: []int{0, 1, 4, 3, 2}, X: 1}
+	translate := makeTranslator(Options{}, func() *termstate.Caret { return caret }, func() string { return "en" })
+	for _, want := range []string{"\x1b[C\x1b[C\x1b[C", "\x1b[D"} {
+		if got := string(translate([]byte("\x1b[C"))); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// Drive the renderer to every caret position, translate a physical arrow, and
+// apply the resulting logical moves: the caret must land on the visually
+// nearest boundary in the arrow's direction, whatever the layout and however
+// Hebrew and English are mixed.
+func TestArrowNavigationVisualDirection(t *testing.T) {
+	t.Setenv("RTLWRAP_SWAP_ARROWS", "")
+	t.Setenv("RTLWRAP_NO_SWAP_ARROWS", "")
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	for _, text := range []string{
+		"שלום",
+		"hello",
+		"שלום hello",
+		"hello שלום",
+		"שלום hello world עולם",
+		"hello שלום עולם world",
+		"❯ שלום hello עולם", // Claude Code prompt
+	} {
+		for _, language := range []string{"he", "en"} {
+			t.Run(language+"/"+text, func(t *testing.T) {
+				runes := []rune(text)
+				for x := 0; x <= len(runes); x++ {
+					e := termstate.NewInline(io.Discard, 60, 2, 0)
+					e.SetRTL(true)
+					if _, err := e.Write([]byte(text + strings.Repeat("\b", len(runes)-x))); err != nil {
+						t.Fatal(err)
+					}
+					caret := e.Caret()
+					for key, dx := range map[byte]int{'D': -1, 'C': 1} {
+						translate := makeTranslator(Options{}, e.Caret, func() string { return language })
+						out := string(translate([]byte{0x1b, '[', key}))
+						n, ok := caret.Step(dx)
+						if !ok {
+							if out != "" {
+								t.Errorf("caret %d key %c: at visual edge, want empty suppressed output, got %q", x, key, out)
+							}
+							continue
+						}
+						got := x + strings.Count(out, "\x1b[C") - strings.Count(out, "\x1b[D")
+						if got != x+n {
+							t.Errorf("caret %d key %c: moved to %d, want %d (visual %d -> %d)",
+								x, key, got, x+n, caret.Map[x], caret.Map[x+n])
+						}
+						if (caret.Map[x+n]-caret.Map[x])*dx <= 0 {
+							t.Errorf("caret %d key %c: visual %d -> %d, wrong direction", x, key, caret.Map[x], caret.Map[x+n])
+						}
+						for j, v := range caret.Map {
+							if d := (v - caret.Map[x]) * dx; d > 0 && d < (caret.Map[x+n]-caret.Map[x])*dx {
+								t.Errorf("caret %d key %c: skipped boundary %d at visual %d", x, key, j, v)
+							}
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCaretStepNearest(t *testing.T) {
+	// "ab" then an RTL run: boundary visual columns 0 1 4 3 2.
+	c := &termstate.Caret{Map: []int{0, 1, 4, 3, 2}, X: 1}
+	for _, tc := range []struct{ x, dx, want int }{
+		{1, 1, 3}, {4, 1, -1}, {3, 1, -1}, {2, -1, 1}, {4, -1, -3}, {1, -1, -1},
+	} {
+		c.X = tc.x
+		if n, ok := c.Step(tc.dx); !ok || n != tc.want {
+			t.Errorf("x %d dx %d: step %d %v, want %d", tc.x, tc.dx, n, ok, tc.want)
+		}
+	}
+	c.X = 2
+	if _, ok := c.Step(1); ok {
+		t.Error("right edge: expected no step")
+	}
+}
