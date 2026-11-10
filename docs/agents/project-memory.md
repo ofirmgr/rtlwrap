@@ -22,6 +22,9 @@ document here.
 - `Engine.render()` in `internal/termstate/engine.go` (line ~176) owns the terminal caret and the
   keyboard-language badge row; it is the place to change badge glyphs/position without touching
   caret mapping or language detection. Verified against source, per Codex memory 2026-09-14.
+  Badge colors: `he` uses SGR `0;34` (blue), `en` uses SGR `0;31` (red), set in the label switch
+  in `render()`; tests in `internal/termstate/language_test.go` and `internal/wrap/language_test.go`
+  match the exact `heBadge`/`enBadge` byte sequences. Verified by `go test ./...`.
 - Warp-specific bidi-mirroring compensation lives in `internal/shape/shape.go`, gated on
   `os.Getenv("TERM_PROGRAM") == "WarpTerminal"`: it clears FriBidi's `ShapeMirroring` flag before
   calling `fribidi.Shape(...)` so Warp's own punctuation-mirroring renderer isn't double-mirrored.
@@ -79,3 +82,23 @@ document here.
   Per Codex memory 2026-09-02/2026-09-13 (not present in README/AGENTS.md).
 - An already-running wrapped process is not updated by rebuilding the binary; restart the wrapper
   (e.g. `rtl codex`) before treating a new build as live behavior. Per Codex memory 2026-09-10/09-13.
+- On Ofir's Mac, `rtl` is `~/.local/bin/rtl -> <repo>/rtlwrap`, so source edits are not live until
+  `CGO_ENABLED=1 go build -o rtlwrap ./cmd/rtlwrap` in the repo root. A stale binary (built
+  2026-10-19) hid the badge-color change. Verified with `ls -la` and `strings` on 2026-11-10.
+- The badge renders only when the row above the caret was painted by the wrapped program in this
+  session (`e.owned[cur.Y-1]`); blank rows and pre-existing shell output stay unowned, so a test
+  child must print text on the line above the caret. TIS works from a non-GUI agent shell
+  (returned `en`), and a pty-driven run printing `first line\nabc` emitted `\x1b[0;31men\x1b[0m`.
+  Running under `script` with no host TTY gives a 0x0 PTY and panics in `vt10x.(*State).setChar`
+  (`index out of range [-1]`, `state.go:268`). Observed 2026-11-10; not fixed.
+- `rtlwrap codex` (codex-cli 0.166.0) driven in a 100x30 Python pty with `TERM_PROGRAM=WarpTerminal`
+  shows the badge on the row above the composer caret (`\x1b[0;31men`). Codex opens with an update
+  prompt first; send Esc to reach the composer. Verified 2026-11-10; not a real Warp window.
+- kiro-cli 3.1.0 never shows the hardware cursor: it sends only `\x1b[?25l` and draws a fake caret
+  as a reverse-video cell (`› \x1b[7m \x1b[0m`). `kiro-cli --v2`, `--legacy-ui` and
+  `chat --legacy-ui` behave the same. `Engine.drawnCaret()` in `internal/termstate/engine.go`
+  places the badge above the only reverse-video cell on screen while the cursor is hidden (none if
+  there are several). The drawn caret does not set the arrow-key `Caret` snapshot, so kiro-cli
+  arrows still fall back to `inputlang.Current()`. Verified by `TestLanguageBadgeFollowsDrawnCaret`
+  and a pty run of `rtlwrap kiro-cli` (badge above the caret, also after typing `שלום abc`) on
+  2026-11-10.

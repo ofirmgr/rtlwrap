@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+// Badge byte sequences: blue "he", red "en".
+const (
+	heBadge = "\x1b[0;34mhe\x1b[0m"
+	enBadge = "\x1b[0;31men\x1b[0m"
+)
+
 func TestLanguageSwitchWhileIdleAndScreenCleanup(t *testing.T) {
 	var out bytes.Buffer
 	d := newInlineDispatcher(&out, 20, 4, 0)
@@ -13,14 +19,14 @@ func TestLanguageSwitchWhileIdleAndScreenCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = d.Write([]byte("header\r\nprompt"))
-	if !strings.Contains(out.String(), "\x1b[0;2mhe\x1b[0m") {
+	if !strings.Contains(out.String(), heBadge) {
 		t.Fatal("main label missing")
 	}
 	out.Reset()
 	if err := d.setLanguage("en"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
+	if !strings.Contains(out.String(), enBadge) {
 		t.Fatal("idle language switch not painted")
 	}
 	out.Reset()
@@ -29,19 +35,20 @@ func TestLanguageSwitchWhileIdleAndScreenCleanup(t *testing.T) {
 	if switchAt < 0 || !strings.Contains(out.String()[:switchAt], "header") {
 		t.Fatal("main label not cleared before alt switch")
 	}
-	if !strings.Contains(out.String()[switchAt:], "\x1b[0;2men\x1b[0m") {
+	if !strings.Contains(out.String()[switchAt:], enBadge) {
 		t.Fatal("alt language not inherited")
 	}
 	out.Reset()
 	_, _ = d.Write([]byte("\x1b[?1049l"))
-	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
+	if !strings.Contains(out.String(), enBadge) {
 		t.Fatal("main label not restored")
 	}
 	out.Reset()
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "header") || strings.Contains(out.String(), "\x1b[0;2m") {
+	if !strings.Contains(out.String(), "header") || strings.Contains(out.String(), heBadge) ||
+		strings.Contains(out.String(), enBadge) {
 		t.Fatal("exit did not remove label")
 	}
 }

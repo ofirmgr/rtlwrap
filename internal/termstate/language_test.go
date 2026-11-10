@@ -8,6 +8,12 @@ import (
 	"github.com/Har2yQn78/rtlwrap/internal/vt10x"
 )
 
+// Badge byte sequences: blue "he", red "en".
+const (
+	heBadge = "\x1b[0;34mhe\x1b[0m"
+	enBadge = "\x1b[0;31men\x1b[0m"
+)
+
 func TestLanguageBadgeRestoresTextAndCursor(t *testing.T) {
 	var out bytes.Buffer
 	e := New(&out, 20, 4)
@@ -60,6 +66,55 @@ func TestLanguageBadgeUsesMixedTextVisualCaret(t *testing.T) {
 	}
 }
 
+func TestLanguageBadgeFollowsDrawnCaret(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		reordered   bool
+	}{
+		{"ltr", "\x1b[?25l\x1b[2;1H> abcd\x1b[7m \x1b[0m\x1b[4;1H", false},
+		{"rtl", "\x1b[?25l\x1b[2;1H> שלום\x1b[7m \x1b[0m\x1b[4;1H", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			e := New(&out, 30, 4)
+			e.SetLanguage("en")
+			_, _ = e.Write([]byte("above row text that is long\r\n"))
+			_, _ = e.Write([]byte(tc.input))
+			screen := vt10x.New(vt10x.WithSize(30, 4))
+			_, _ = screen.Write(out.Bytes())
+			caretX := -1
+			for x := 0; x < 30; x++ {
+				if screen.Cell(x, 1).Mode&attrReverse != 0 {
+					caretX = x
+				}
+			}
+			if caretX < 0 {
+				t.Fatal("drawn caret not rendered")
+			}
+			if (caretX != 6) != tc.reordered {
+				t.Fatalf("drawn caret at column %d, reordered=%v", caretX, tc.reordered)
+			}
+			x := min(caretX, 28)
+			if screen.Cell(x, 0).Char != 'e' || screen.Cell(x+1, 0).Char != 'n' {
+				t.Fatalf("label not above drawn caret at column %d", caretX)
+			}
+			if e.Caret() != nil {
+				t.Fatal("drawn caret fed arrow navigation")
+			}
+		})
+	}
+}
+
+func TestLanguageBadgeIgnoresAmbiguousDrawnCaret(t *testing.T) {
+	var out bytes.Buffer
+	e := New(&out, 20, 4)
+	e.SetLanguage("he")
+	_, _ = e.Write([]byte("text\r\n\x1b[?25l\x1b[7m menu \x1b[0m> \x1b[7m \x1b[0m"))
+	if strings.Contains(out.String(), heBadge) {
+		t.Fatal("label rendered for several reverse-video cells")
+	}
+}
+
 func TestLanguageBadgeHiddenAtUnsafePositions(t *testing.T) {
 	for _, tc := range []struct {
 		name, input, language string
@@ -75,7 +130,7 @@ func TestLanguageBadgeHiddenAtUnsafePositions(t *testing.T) {
 			e := New(&out, tc.cols, 4)
 			e.SetLanguage(tc.language)
 			_, _ = e.Write([]byte(tc.input))
-			if strings.Contains(out.String(), "\x1b[0;2m") {
+			if strings.Contains(out.String(), heBadge) || strings.Contains(out.String(), enBadge) {
 				t.Fatal("unsafe label rendered")
 			}
 		})
@@ -84,7 +139,7 @@ func TestLanguageBadgeHiddenAtUnsafePositions(t *testing.T) {
 	e := NewInline(&out, 20, 4, 2)
 	e.SetLanguage("he")
 	_, _ = e.Write([]byte("prompt"))
-	if strings.Contains(out.String(), "\x1b[0;2mhe\x1b[0m") {
+	if strings.Contains(out.String(), heBadge) {
 		t.Fatal("label overwrote unknown shell row")
 	}
 }
@@ -140,7 +195,7 @@ func TestLanguageResizeDoesNotRestoreStaleRow(t *testing.T) {
 		t.Fatal("cleanup used stale coordinates")
 	}
 	_, _ = e.Write([]byte("\x1b[2J\x1b[Hfresh\r\nprompt"))
-	if !strings.Contains(out.String(), "\x1b[0;2men\x1b[0m") {
+	if !strings.Contains(out.String(), enBadge) {
 		t.Fatal("label did not return after child repaint")
 	}
 }

@@ -253,18 +253,28 @@ func (e *Engine) render() error {
 		caret = &Caret{Map: caretMaps[cur.Y], X: cur.X}
 	}
 	e.caret.Store(caret)
-	label := ""
+	label, color := "", ""
 	switch e.language {
 	case "he":
-		label = "he"
+		label, color = "he", "34" // blue
 	case "en":
-		label = "en"
+		label, color = "en", "31" // red
 	}
-	if label != "" && e.vt.CursorVisible() && cols >= 2 && cur.Y > 0 && cur.Y < rows &&
-		(e.owned == nil || e.owned[cur.Y-1]) {
-		x := min(max(cx, 0), cols-2)
-		e.badgeRow, e.badgeLine = cur.Y, e.prev[cur.Y-1]
-		fmt.Fprintf(&buf, "\x1b[%d;%dH\x1b[0;2m%s\x1b[0m", cur.Y, x+1, label)
+	// The label follows the terminal caret, or the caret a TUI draws itself
+	// after hiding the terminal's (kiro-cli). The drawn caret is display-only:
+	// it does not feed the arrow-key Caret above.
+	bx, by, shown := cx, cur.Y, e.vt.CursorVisible()
+	if !shown {
+		if fx, fy, ok := e.drawnCaret(cols, rows); ok {
+			bx = min(max(visualX(caretMaps[fy], fx, cols)+pads[fy], 0), cols-1)
+			by, shown = fy, true
+		}
+	}
+	if label != "" && shown && cols >= 2 && by > 0 && by < rows &&
+		(e.owned == nil || e.owned[by-1]) {
+		x := min(max(bx, 0), cols-2)
+		e.badgeRow, e.badgeLine = by, e.prev[by-1]
+		fmt.Fprintf(&buf, "\x1b[%d;%dH\x1b[0;%sm%s\x1b[0m", by, x+1, color, label)
 	}
 	buf.WriteString("\x1b[?7h") // re-enable autowrap
 	fmt.Fprintf(&buf, "\x1b[%d;%dH", cur.Y+1, cx+1)
@@ -274,6 +284,25 @@ func (e *Engine) render() error {
 
 	_, err := e.w.Write(buf.Bytes())
 	return err
+}
+
+// drawnCaret returns the logical cell of the caret a TUI draws as a single
+// reverse-video cell while the terminal cursor is hidden. Several reverse-video
+// cells (a highlighted menu, selected text) are ambiguous and report none.
+// The caller holds the vt lock.
+func (e *Engine) drawnCaret(cols, rows int) (x, y int, ok bool) {
+	for cy := 0; cy < rows; cy++ {
+		for cx := 0; cx < cols; cx++ {
+			if e.vt.Cell(cx, cy).Mode&attrReverse == 0 {
+				continue
+			}
+			if ok {
+				return 0, 0, false
+			}
+			x, y, ok = cx, cy, true
+		}
+	}
+	return x, y, ok
 }
 
 // renderRow builds the SGR-encoded visual string for grid row y and returns it
